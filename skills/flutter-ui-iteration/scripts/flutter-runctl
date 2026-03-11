@@ -1,0 +1,585 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import selectors
+import shlex
+import signal
+import socket
+import sys
+import termios
+import threading
+import time
+import tty
+from pathlib import Path
+import fcntl
+import pty
+import struct
+
+APP_NAME = "flutter-external-reload"
+READ_SIZE = 1024
+LOG_TAIL_DEFAULT = 200
+SOCKET_TIMEOUT_SEC = 0.5
+SOCKET_READY_TIMEOUT_SEC = 2.0
+
+
+def get_state_dir():
+    env_dir = os.environ.get("FLUTTER_EXTERNAL_RELOAD_STATE_DIR")
+    if env_dir:
+        return Path(env_dir)
+    xdg_state = os.environ.get("XDG_STATE_HOME")
+    if xdg_state:
+        return Path(xdg_state) / APP_NAME
+    return Path.home() / ".local" / "state" / APP_NAME
+
+
+def get_instances_dir():
+    return get_state_dir() / "instances"
+
+
+def ensure_instances_dir():
+    instances_dir = get_instances_dir()
+    instances_dir.mkdir(parents=True, exist_ok=True)
+    return instances_dir
+
+
+def parse_device_id(args):
+    for i, arg in enumerate(args):
+        if arg == "--":
+            break
+        if arg in ("-d", "--device-id"):
+            if i + 1 < len(args):
+                return args[i + 1]
+        if arg.startswith("--device-id="):
+            return arg.split("=", 1)[1]
+        if arg.startswith("-d="):
+            return arg.split("=", 1)[1]
+        if arg.startswith("-d") and len(arg) > 2 and not arg.startswith("-d="):
+            return arg[2:]
+    return None
+
+
+def is_pid_running(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def cleanup_stale(meta_path, socket_path):
+    for path in (socket_path, meta_path):
+        try:
+            if path:
+                Path(path).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
+def load_sessions():
+    instances_dir = get_instances_dir()
+    if not instances_dir.exists():
+        return []
+
+    sessions = []
+    for meta_path in instances_dir.glob("*.json"):
+        try:
+            with meta_path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        pid = data.get("pid")
+        socket_path = data.get("socket_path")
+        if not pid or not socket_path:
+            cleanup_stale(meta_path, socket_path)
+            continue
+
+        if not is_pid_running(pid):
+            cleanup_stale(meta_path, socket_path)
+            continue
+
+        data["meta_path"] = str(meta_path)
+        sessions.append(data)
+
+    return sessions
+
+
+def format_args(args):
+    return " ".join(shlex.quote(arg) for arg in args)
+
+
+def list_cmd(argv):
+    parser = argparse.ArgumentParser(prog="flutter-runctl list", description="List running flutter run sessions")
+    parser.add_argument("--json", action="store_true", help="print session data as JSON")
+    args = parser.parse_args(argv)
+
+    sessions = load_sessions()
+    if args.json:
+        print(json.dumps(sessions, indent=2))
+        return 0
+
+    if not sessions:
+        print("No running flutter run sessions found.")
+        return 0
+
+    print("SESSION_ID\tDEVICE_ID\tPID\tCWD\tARGS")
+    for session in sessions:
+        device_id = session.get("device_id") or "<unknown>"
+        print(
+            f"{session.get('session_id')}\t{device_id}\t{session.get('pid')}\t"
+            f"{session.get('cwd')}\t{format_args(session.get('args', []))}"
+        )
+    return 0
+
+
+def send_reload(socket_path, command_char):
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.connect(socket_path)
+        sock.sendall(command_char.encode("utf-8"))
+        response = sock.recv(64)
+    finally:
+        sock.close()
+
+    if response.startswith(b"OK"):
+        return 0
+    message = response.decode("utf-8", "replace").strip() or "unknown error"
+    print(f"flutter-runctl: reload failed: {message}", file=sys.stderr)
+    return 1
+
+
+def reload_cmd(argv):
+    parser = argparse.ArgumentParser(prog="flutter-runctl reload", description="Trigger hot reload/restart")
+    parser.add_argument("-d", "--device-id", help="device id to target")
+    parser.add_argument("--session-id", help="session id to target")
+    parser.add_argument(
+        "-t",
+        "--type",
+        required=True,
+        choices=["r", "R", "hot", "restart"],
+        help="reload type: r/hot or R/restart",
+    )
+    args = parser.parse_args(argv)
+
+    if not args.device_id and not args.session_id:
+        parser.error("provide --device-id or --session-id")
+
+    sessions = load_sessions()
+    if args.session_id:
+        matches = [s for s in sessions if s.get("session_id") == args.session_id]
+    else:
+        matches = [s for s in sessions if s.get("device_id") == args.device_id]
+
+    if not matches:
+        target = args.session_id or args.device_id
+        print(f"flutter-runctl: no matching session for {target}", file=sys.stderr)
+        return 1
+
+    if len(matches) > 1:
+        print("flutter-runctl: multiple sessions match; use --session-id to disambiguate", file=sys.stderr)
+        return 1
+
+    command_char = "r" if args.type in ("r", "hot") else "R"
+    return send_reload(matches[0]["socket_path"], command_char)
+
+def tail_file_lines(path, line_count):
+    if line_count <= 0:
+        return []
+
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            end_pos = handle.tell()
+            block_size = 4096
+            data = b""
+            pos = end_pos
+            while pos > 0 and data.count(b"\n") <= line_count:
+                read_size = block_size if pos >= block_size else pos
+                pos -= read_size
+                handle.seek(pos)
+                data = handle.read(read_size) + data
+            lines = data.splitlines()
+            return lines[-line_count:]
+    except OSError:
+        return None
+
+
+def logs_cmd(argv):
+    parser = argparse.ArgumentParser(prog="flutter-runctl logs", description="Show flutter run logs")
+    parser.add_argument("-d", "--device-id", help="device id to target")
+    parser.add_argument("--session-id", help="session id to target")
+    parser.add_argument("--tail", type=int, default=None, help="show only the last N lines")
+    args = parser.parse_args(argv)
+
+    if not args.device_id and not args.session_id:
+        parser.error("provide --device-id or --session-id")
+
+    sessions = load_sessions()
+    if args.session_id:
+        matches = [s for s in sessions if s.get("session_id") == args.session_id]
+    else:
+        matches = [s for s in sessions if s.get("device_id") == args.device_id]
+
+    if not matches:
+        target = args.session_id or args.device_id
+        print(f"flutter-runctl: no matching session for {target}", file=sys.stderr)
+        return 1
+
+    if len(matches) > 1:
+        print("flutter-runctl: multiple sessions match; use --session-id to disambiguate", file=sys.stderr)
+        return 1
+
+    log_path = matches[0].get("log_path")
+    if not log_path or not Path(log_path).exists():
+        print("flutter-runctl: log file not found for session", file=sys.stderr)
+        return 1
+
+    if args.tail is None:
+        try:
+            with open(log_path, "rb") as handle:
+                sys.stdout.buffer.write(handle.read())
+        except OSError as exc:
+            print(f"flutter-runctl: failed to read logs: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    lines = tail_file_lines(log_path, args.tail)
+    if lines is None:
+        print("flutter-runctl: failed to read logs", file=sys.stderr)
+        return 1
+    for line in lines:
+        sys.stdout.buffer.write(line + b"\n")
+    return 0
+
+
+def control_server(socket_path, master_fd, write_lock, stop_event, ready_event, error_holder):
+    socket_path = Path(socket_path)
+    try:
+        socket_path.unlink()
+    except FileNotFoundError:
+        pass
+
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        server.bind(str(socket_path))
+        server.listen(5)
+        server.settimeout(SOCKET_TIMEOUT_SEC)
+        ready_event.set()
+        while not stop_event.is_set():
+            try:
+                conn, _ = server.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            with conn:
+                try:
+                    data = conn.recv(16)
+                except OSError:
+                    continue
+                if not data:
+                    continue
+                command = data.decode("utf-8", "ignore").strip()
+                if not command:
+                    continue
+                command_char = command[0]
+                if command_char in ("r", "R"):
+                    with write_lock:
+                        os.write(master_fd, command_char.encode("utf-8"))
+                    try:
+                        conn.sendall(b"OK\n")
+                    except OSError:
+                        pass
+                else:
+                    try:
+                        conn.sendall(b"ERROR unknown command\n")
+                    except OSError:
+                        pass
+    except OSError as exc:
+        error_holder["error"] = str(exc)
+        ready_event.set()
+    finally:
+        try:
+            server.close()
+        except OSError:
+            pass
+
+
+def set_pty_size(master_fd, stdin_fd):
+    try:
+        buf = fcntl.ioctl(stdin_fd, termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
+        rows, cols, _, _ = struct.unpack("HHHH", buf)
+        if rows and cols:
+            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    except OSError:
+        pass
+
+
+def run_flutter(args):
+    instances_dir = ensure_instances_dir()
+    device_id = parse_device_id(args)
+
+    pid, master_fd = pty.fork()
+    if pid == 0:
+        try:
+            os.execvp("flutter", ["flutter", "run", *args])
+        except FileNotFoundError:
+            os.write(2, b"flutter-runctl: flutter not found in PATH\n")
+            os._exit(127)
+
+    session_id = f"{int(time.time())}-{pid}"
+    socket_path = instances_dir / f"{session_id}.sock"
+    meta_path = instances_dir / f"{session_id}.json"
+    log_path = instances_dir / f"{session_id}.log"
+
+    stop_event = threading.Event()
+    write_lock = threading.Lock()
+    server_ready = threading.Event()
+    server_error = {}
+    server_thread = threading.Thread(
+        target=control_server,
+        args=(socket_path, master_fd, write_lock, stop_event, server_ready, server_error),
+        daemon=True,
+    )
+    server_thread.start()
+
+    if not server_ready.wait(timeout=SOCKET_READY_TIMEOUT_SEC):
+        print("flutter-runctl: timed out waiting for control socket", file=sys.stderr)
+        stop_event.set()
+        try:
+            server_thread.join(timeout=1)
+        except RuntimeError:
+            pass
+        cleanup_stale(meta_path, socket_path)
+        try:
+            os.kill(pid, signal.SIGTERM)
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+        return 1
+
+    if "error" in server_error:
+        print(f"flutter-runctl: failed to open control socket: {server_error['error']}", file=sys.stderr)
+        stop_event.set()
+        try:
+            server_thread.join(timeout=1)
+        except RuntimeError:
+            pass
+        cleanup_stale(meta_path, socket_path)
+        try:
+            os.kill(pid, signal.SIGTERM)
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+        return 1
+
+    metadata = {
+        "session_id": session_id,
+        "pid": pid,
+        "wrapper_pid": os.getpid(),
+        "device_id": device_id,
+        "socket_path": str(socket_path),
+        "log_path": str(log_path),
+        "args": args,
+        "cwd": os.getcwd(),
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    with meta_path.open("w", encoding="utf-8") as handle:
+        json.dump(metadata, handle)
+
+    stdin_fd = sys.stdin.fileno()
+    stdout_fd = sys.stdout.fileno()
+    original_attrs = None
+
+    if os.isatty(stdin_fd):
+        try:
+            original_attrs = termios.tcgetattr(stdin_fd)
+            tty.setraw(stdin_fd)
+        except termios.error:
+            original_attrs = None
+
+    def handle_signal(signum, _frame):
+        try:
+            os.kill(pid, signum)
+        except ProcessLookupError:
+            pass
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, handle_signal)
+        except ValueError:
+            pass
+
+    def handle_winch(_signum, _frame):
+        set_pty_size(master_fd, stdin_fd)
+
+    try:
+        signal.signal(signal.SIGWINCH, handle_winch)
+    except ValueError:
+        pass
+
+    set_pty_size(master_fd, stdin_fd)
+
+    selector = selectors.DefaultSelector()
+    master_registered = False
+    stdin_registered = False
+    try:
+        selector.register(master_fd, selectors.EVENT_READ)
+        master_registered = True
+    except Exception:
+        pass
+    try:
+        selector.register(stdin_fd, selectors.EVENT_READ)
+        stdin_registered = True
+    except Exception:
+        pass
+
+    log_handle = None
+    try:
+        log_handle = open(log_path, "ab")
+    except OSError:
+        log_handle = None
+
+    exit_status = None
+    try:
+        while True:
+            pid_done, status = os.waitpid(pid, os.WNOHANG)
+            if pid_done == pid:
+                exit_status = status
+            for key, _ in selector.select(timeout=0.1):
+                if key.fileobj == master_fd:
+                    try:
+                        data = os.read(master_fd, READ_SIZE)
+                    except OSError:
+                        data = b""
+                    if not data:
+                        break
+                    os.write(stdout_fd, data)
+                    if log_handle is not None:
+                        try:
+                            log_handle.write(data)
+                            log_handle.flush()
+                        except OSError:
+                            pass
+                else:
+                    try:
+                        data = os.read(stdin_fd, READ_SIZE)
+                    except OSError:
+                        data = b""
+                    if data:
+                        with write_lock:
+                            os.write(master_fd, data)
+            if exit_status is not None:
+                try:
+                    while True:
+                        data = os.read(master_fd, READ_SIZE)
+                        if not data:
+                            break
+                        os.write(stdout_fd, data)
+                        if log_handle is not None:
+                            try:
+                                log_handle.write(data)
+                                log_handle.flush()
+                            except OSError:
+                                pass
+                except OSError:
+                    pass
+                break
+    finally:
+        stop_event.set()
+        try:
+            server_thread.join(timeout=1)
+        except RuntimeError:
+            pass
+        if master_registered:
+            try:
+                selector.unregister(master_fd)
+            except Exception:
+                pass
+        if stdin_registered:
+            try:
+                selector.unregister(stdin_fd)
+            except Exception:
+                pass
+        try:
+            selector.close()
+        except Exception:
+            pass
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+        if original_attrs is not None:
+            try:
+                termios.tcsetattr(stdin_fd, termios.TCSADRAIN, original_attrs)
+            except termios.error:
+                pass
+        if log_handle is not None:
+            try:
+                log_handle.close()
+            except OSError:
+                pass
+        cleanup_stale(meta_path, socket_path)
+
+    if exit_status is None:
+        return 0
+    if os.WIFEXITED(exit_status):
+        return os.WEXITSTATUS(exit_status)
+    if os.WIFSIGNALED(exit_status):
+        return 128 + os.WTERMSIG(exit_status)
+    return 1
+
+
+def print_help():
+    print(
+        """
+flutter-runctl: wrap flutter run with session tracking and external hot reloads.
+
+Usage:
+  flutter-runctl run [flutter run args...]
+  flutter-runctl list [--json]
+  flutter-runctl reload -d <device-id> -t r|R
+  flutter-runctl logs -d <device-id> [--tail N]
+
+Notes:
+  - Device id is captured from -d/--device-id arguments.
+  - State lives under $FLUTTER_EXTERNAL_RELOAD_STATE_DIR or $XDG_STATE_HOME.
+""".strip()
+    )
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+        print_help()
+        return 0
+
+    command = sys.argv[1]
+    if command == "run":
+        return run_flutter(sys.argv[2:])
+    if command == "list":
+        return list_cmd(sys.argv[2:])
+    if command == "reload":
+        return reload_cmd(sys.argv[2:])
+    if command == "logs":
+        return logs_cmd(sys.argv[2:])
+
+    print(f"flutter-runctl: unknown command '{command}'", file=sys.stderr)
+    print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

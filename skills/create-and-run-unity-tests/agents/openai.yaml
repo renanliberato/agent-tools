@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create and Run Unity Tests"
+  short_description: "Add and verify Unity editor tests"
+  default_prompt: "Use $create-and-run-unity-tests to add a Unity test, run ./unity-test, and confirm whether the new test ran and passed."

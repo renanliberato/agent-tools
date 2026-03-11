@@ -1,0 +1,4 @@
+interface:
+  display_name: "Unity Check Script Assemblies"
+  short_description: "Check whether Unity ScriptAssemblies compile"
+  default_prompt: "Use $unity-check-script-assemblies to verify whether a Unity project currently compiles its ScriptAssemblies and summarize any compiler errors."

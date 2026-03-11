@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# device-screenshot
+#
+# macOS shell script exposing 2 APIs:
+#   - list_devices
+#   - take_screenshot <id> <output_path>
+#
+# IDs are prefixed so you can route correctly:
+#   android:<adb-serial>
+#   iossim:<simulator-udid>
+#
+# Requirements:
+#   - Android: adb on PATH
+#   - iOS Simulator: Xcode CLT (xcrun, simctl)
+
+set -euo pipefail
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+usage() {
+  cat <<'EOUSAGE'
+Usage:
+  ./device-screenshot list_devices
+  ./device-screenshot take_screenshot <id> <output_path>
+
+Examples:
+  ./device-screenshot list_devices
+  ./device-screenshot take_screenshot android:emulator-5554 /tmp/a.png
+  ./device-screenshot take_screenshot iossim:ABCD-... /tmp/sim.png
+EOUSAGE
+}
+
+ensure_parent_dir() {
+  local out="$1"
+  local dir
+  dir="$(dirname "$out")"
+  mkdir -p "$dir"
+}
+
+# ---- list_devices helpers ----
+
+list_android_devices() {
+  have adb || return 0
+
+  # adb devices -l outputs:
+  #   <serial>\tdevice ... model:... device:... transport_id:...
+  adb devices -l | awk '
+    NR==1 { next }
+    $2=="device" {
+      serial=$1;
+      model="";
+      for (i=3;i<=NF;i++) {
+        if ($i ~ /^model:/) { sub(/^model:/,"",$i); model=$i; }
+      }
+      if (model=="") model="(unknown-model)";
+      printf "android:%s\tandroid\t%s\n", serial, model;
+    }
+  '
+}
+
+list_ios_simulators_booted() {
+  have xcrun || return 0
+
+  # Only list *booted* simulators (closest to “currently connected”).
+  # Format example:
+  #   iPhone 14 (UDID) (Booted)
+  xcrun simctl list devices booted 2>/dev/null | perl -ne '
+    chomp;
+    next if /^\s*$/;
+    next if /^==/;
+    if (/^\s*(.+?) \(([0-9A-F-]{36})\) \((Booted)\)\s*$/i) {
+      my ($name,$udid) = ($1,$2);
+      print "iossim:$udid\tios_sim\t$name\n";
+    }
+  '
+}
+
+list_devices() {
+  # Header (optional)
+  # echo -e "id\tplatform\tname"
+  list_android_devices || true
+  list_ios_simulators_booted || true
+}
+
+# ---- take_screenshot helpers ----
+
+take_android_screenshot() {
+  local serial="$1"
+  local out="$2"
+  have adb || die "adb not found on PATH"
+
+  ensure_parent_dir "$out"
+  # Fast, direct-to-host screenshot.
+  adb -s "$serial" exec-out screencap -p > "$out"
+}
+
+take_ios_sim_screenshot() {
+  local udid="$1"
+  local out="$2"
+  have xcrun || die "xcrun not found (install Xcode Command Line Tools)"
+
+  ensure_parent_dir "$out"
+  # simctl io screenshot works for Simulator.
+  xcrun simctl io "$udid" screenshot "$out"
+}
+
+take_screenshot() {
+  local id="${1:-}"
+  local out="${2:-}"
+  [[ -n "$id" && -n "$out" ]] || die "take_screenshot requires <id> <output_path>"
+
+  case "$id" in
+    android:*)
+      take_android_screenshot "${id#android:}" "$out"
+      ;;
+    iossim:*)
+      take_ios_sim_screenshot "${id#iossim:}" "$out"
+      ;;
+    *)
+      die "Unknown id prefix. Expected android:... or iossim:..."
+      ;;
+  esac
+}
+
+# ---- main ----
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  list_devices)
+    list_devices
+    ;;
+  take_screenshot)
+    take_screenshot "${1:-}" "${2:-}"
+    ;;
+  -h|--help|"")
+    usage
+    ;;
+  *)
+    die "Unknown command: $cmd (use --help)"
+    ;;
+esac

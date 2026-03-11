@@ -1,0 +1,4 @@
+interface:
+  display_name: "Evidence Debugger"
+  short_description: "Run evidence-first debug sessions"
+  default_prompt: "Use $evidence-debugger to investigate this bug with runtime evidence before applying a fix."

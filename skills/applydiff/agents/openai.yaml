@@ -1,0 +1,4 @@
+interface:
+  display_name: "Apply Git Diff"
+  short_description: "Apply local git diff to parent repository root."
+  default_prompt: "Use this skill to apply the current repository diff, including untracked files, to the parent repository directory."
