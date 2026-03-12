@@ -37,6 +37,9 @@ description: Check whether a Unity project's C# scripts currently compile by rer
 ## Practical Notes
 
 - Prefer this skill when the user wants a quick compile verdict instead of a full Unity test run or editor launch workflow.
+- The helper script resolves `bee_backend` from both supported Unity layouts:
+  `Unity.app/Contents/bee_backend` (Unity 6.2) and
+  `Unity.app/Contents/Resources/BuildPipeline/bee_backend` (Unity 6.3).
 - Treat missing `ProjectVersion.txt`, a missing Unity installation for that version, or a missing DAG entry as setup/precondition failures, not compile failures.
 - Do not hide the raw compiler output. Summarize it, but preserve the important failing path, line, and error code in your response.
 - If multiple Unity projects have been opened recently and the DAG looks stale or unrelated, tell the user the Editor log may need to be refreshed by opening the target project in Unity and compiling once.

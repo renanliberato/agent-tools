@@ -26,11 +26,32 @@ if [[ -z "$editor_version" ]]; then
   exit 2
 fi
 
-unity_bee_backend="/Applications/Unity/Hub/Editor/$editor_version/Unity.app/Contents/bee_backend"
+resolve_unity_bee_backend() {
+  local editor_root="$1"
+  local candidate
+  local -a candidates=(
+    "$editor_root/Unity.app/Contents/bee_backend"
+    "$editor_root/Unity.app/Contents/Resources/BuildPipeline/bee_backend"
+  )
+
+  for candidate in "${candidates[@]}"; do
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+editor_root="/Applications/Unity/Hub/Editor/$editor_version"
+unity_bee_backend="$(resolve_unity_bee_backend "$editor_root" || true)"
 unity_binary="/Applications/Unity/Hub/Editor/$editor_version/Unity.app/Contents/MacOS/Unity"
 
-if [[ ! -x "$unity_bee_backend" ]]; then
-  echo "Unity bee_backend not found or not executable: $unity_bee_backend" >&2
+if [[ -z "$unity_bee_backend" ]]; then
+  echo "Unity bee_backend not found for editor version $editor_version." >&2
+  echo "Checked: $editor_root/Unity.app/Contents/bee_backend" >&2
+  echo "Checked: $editor_root/Unity.app/Contents/Resources/BuildPipeline/bee_backend" >&2
   exit 2
 fi
 
