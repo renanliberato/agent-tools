@@ -19,7 +19,7 @@ description: Add a simple Unity Edit Mode unit test to an existing project, run 
    Use a clear fixture and method name.
    Record the exact fully qualified test name because you will need it when checking `./unity-test events`.
 
-4. Run the Unity daemon workflow from the project root.
+4. Run the Unity test workflow from the project root.
 
 ```bash
 ./unity-test run
@@ -28,6 +28,9 @@ description: Add a simple Unity Edit Mode unit test to an existing project, run 
 ./unity-test events
 ```
 
+   `./unity-test run` now tries Unity batchmode first through `-executeMethod UnityTdd.TestDaemon.BatchmodeTestRunner.Run`.
+   The batchmode runner uses `TestRunnerApi` directly and writes `status/results/events` into `Library/TestDaemon`.
+   If Unity reports the project is already open in another instance, the wrapper falls back to the existing `Library/TestDaemon/run-tests.pending` workflow.
    If the user explicitly asks for this exact sequence, follow it exactly.
    If the user only wants to validate the new test quickly and does not require a full suite run, you may pass a filter to `./unity-test run`.
 
