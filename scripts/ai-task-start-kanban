@@ -1,0 +1,17 @@
+#!/usr/bin/env zsh
+issues_dir="${1:?Usage: ai-task-start-kanban <issues-folder>}"
+issues_dir="$(cd "$issues_dir" && pwd)"
+
+project_name="$(basename "$PWD")"
+project_dir="$PWD"
+status_dir="/tmp/kanban-${project_name}-$$"
+mkdir -p "$status_dir"
+
+python3 ~/projects/renan/agent-tools/scripts/kanban-parse-deps.py "$issues_dir" > "${status_dir}/deps.json"
+echo "[kanban] deps parsed → ${status_dir}/deps.json"
+
+ws_ref=$(cmux new-workspace --cwd "$project_dir" \
+  --command "python3 ~/projects/renan/agent-tools/scripts/kanban-orchestrator.py '${issues_dir}' '${project_dir}' '${status_dir}' \$CMUX_WORKSPACE_ID" \
+  | awk '{print $2}')
+cmux rename-workspace --workspace "$ws_ref" "kanban-${project_name}"
+cmux select-workspace --workspace "$ws_ref"
