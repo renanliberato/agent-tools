@@ -1,0 +1,18 @@
+#!/usr/bin/env zsh
+task="${1:?Usage: ai-task-start <task-slug>}"
+model="${2:-opus}"
+project_name="$(basename "$PWD")"
+worktree_path="$(dirname "$PWD")/${project_name}-${task}"
+
+branch="${3:-}"
+if [[ -n "$branch" ]]; then
+  git worktree add "$worktree_path" "$branch"
+else
+  git worktree add "$worktree_path"
+fi
+
+ws_ref=$(cmux new-workspace --cwd "$worktree_path" \
+  --command "~/projects/renan/agent-tools/scripts/worktree-oneshot-agent.sh ${project_name}-${task} ${model} \$CMUX_WORKSPACE_ID" \
+  | awk '{print $2}')
+cmux rename-workspace --workspace "$ws_ref" "$task"
+cmux select-workspace --workspace "$ws_ref"
