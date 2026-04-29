@@ -64,10 +64,12 @@ def spawn_task(task_id):
 
     subprocess.run(['cmux', 'rename-tab', '--surface', surface_ref, slug], check=True)
 
-    model = os.environ.get('KANBAN_MODEL', 'sonnet')
+    model    = os.environ.get('KANBAN_MODEL', 'sonnet')
+    headless = os.environ.get('KANBAN_HEADLESS', '0')
     cmd = (
         f"cd '{worktree}' && "
-        f"KANBAN_MODEL='{model}' ~/projects/renan/agent-tools/scripts/kanban-run-task.sh "
+        f"KANBAN_MODEL='{model}' KANBAN_HEADLESS='{headless}' "
+        f"~/projects/renan/agent-tools/scripts/kanban-run-task.sh "
         f"'{task_id}' '{slug}' '{issue_path}' '{status_dir}' '{base_branch}'\n"
     )
     subprocess.run(['cmux', 'send', '--surface', surface_ref, cmd], check=True)
@@ -97,6 +99,11 @@ def handle_failure(task_id):
     cleanup_task(task_id)
     with open(failures_log, 'a') as f:
         f.write(f"[kanban] ✗ {slug} FAILED\n")
+
+    if os.environ.get('KANBAN_HEADLESS', '0') == '1':
+        retryable.discard(task_id)
+        print(f"[kanban] ✗ {slug} FAILED — auto-skipped (headless)", flush=True)
+        return
 
     while task_id in retryable:
         print(f"\n[kanban] ✗ {slug} FAILED", flush=True)
