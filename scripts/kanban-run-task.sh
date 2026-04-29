@@ -6,7 +6,7 @@ task_slug="$2"
 abs_issue_path="$3"
 status_dir="$4"
 
-${KANBAN_MODEL:-sonnet} "Work on @${abs_issue_path} and git commit after finishing."
+${KANBAN_MODEL:-sonnet} "Read the issue spec at @${abs_issue_path}, then implement it in the current worktree (${PWD}/). Do all file edits and the git commit from the current directory; do not switch to the parent worktree for git operations."
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
