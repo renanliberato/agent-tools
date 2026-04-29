@@ -1,0 +1,98 @@
+#!/usr/bin/env zsh
+set -euo pipefail
+
+usage() {
+  echo "Usage: prd-issues-archive <planning-dir> <archive-base-dir> [slug]"
+  echo ""
+  echo "  <planning-dir>     Path to .planning directory (e.g. ~/project-a/.planning)"
+  echo "  <archive-base-dir> Root archive folder (e.g. ~/plans-archive)"
+  echo "  [slug]             Optional label for the archive subfolder. Derived from"
+  echo "                     the PRD title if omitted."
+  echo ""
+  echo "  Output: <archive-base-dir>/<project>/<YYYY-MM-DD-HH-MM>-<slug>/"
+  exit 1
+}
+
+[[ $# -lt 2 ]] && usage
+
+planning_dir="${1%/}"
+archive_base="${2%/}"
+explicit_slug="${3:-}"
+
+# Resolve absolute paths
+planning_dir="$(cd "$planning_dir" 2>/dev/null && pwd)" || {
+  echo "error: planning directory not found: $1" >&2; exit 1
+}
+mkdir -p "$archive_base"
+archive_base="$(cd "$archive_base" && pwd)"
+
+prd_file="$planning_dir/prd.md"
+issues_dir="$planning_dir/issues"
+
+# Require at least one of prd.md or issues/
+if [[ ! -f "$prd_file" && ! -d "$issues_dir" ]]; then
+  echo "error: neither prd.md nor issues/ found in $planning_dir" >&2
+  exit 1
+fi
+
+# Project name = parent directory of .planning
+project_name="$(basename "$(dirname "$planning_dir")")"
+
+# Derive slug
+if [[ -n "$explicit_slug" ]]; then
+  slug="$explicit_slug"
+elif [[ -f "$prd_file" ]]; then
+  # Extract first non-empty heading from prd.md, strip leading #/spaces
+  raw_heading=$(grep -m1 '^#' "$prd_file" | sed 's/^#* *//')
+  # Slugify: lowercase, replace spaces/special chars with hyphens, collapse runs
+  slug=$(echo "$raw_heading" \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed 's/[^a-z0-9]/-/g' \
+    | sed 's/--*/-/g' \
+    | sed 's/^-//;s/-$//')
+  [[ -z "$slug" ]] && slug="planning"
+else
+  slug="planning"
+fi
+
+timestamp=$(date +"%Y-%m-%d-%H-%M")
+dest="$archive_base/$project_name/${timestamp}-${slug}"
+
+if [[ -d "$dest" ]]; then
+  echo "error: destination already exists: $dest" >&2
+  exit 1
+fi
+
+mkdir -p "$dest"
+
+copied=0
+
+if [[ -f "$prd_file" ]]; then
+  cp "$prd_file" "$dest/prd.md"
+  echo "  prd.md"
+  (( ++copied )) || true
+fi
+
+if [[ -d "$issues_dir" ]]; then
+  issue_files=("$issues_dir"/*.md(N))
+  if [[ ${#issue_files[@]} -gt 0 ]]; then
+    mkdir -p "$dest/issues"
+    for f in "${issue_files[@]}"; do
+      cp "$f" "$dest/issues/$(basename "$f")"
+      echo "  issues/$(basename "$f")"
+      (( ++copied )) || true
+    done
+  fi
+fi
+
+echo ""
+echo "Archived $copied file(s) → $dest"
+
+# Commit and push the new files in the archive repo
+(
+  cd "$archive_base"
+  git add "$dest"
+  git commit -m "archive: ${project_name} ${timestamp}-${slug}"
+  git push
+)
+echo "Committed and pushed to remote."
