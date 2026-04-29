@@ -49,6 +49,11 @@ def spawn_task(task_id):
     worktree   = os.path.join(os.path.dirname(project_dir),
                               f"{os.path.basename(project_dir)}-{slug}")
 
+    base_branch = subprocess.run(
+        ['git', '-C', project_dir, 'rev-parse', '--abbrev-ref', 'HEAD'],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
     subprocess.run(['git', '-C', project_dir, 'worktree', 'add', worktree], check=True)
 
     result = subprocess.run(
@@ -63,7 +68,7 @@ def spawn_task(task_id):
     cmd = (
         f"cd '{worktree}' && "
         f"KANBAN_MODEL='{model}' ~/projects/renan/agent-tools/scripts/kanban-run-task.sh "
-        f"'{task_id}' '{slug}' '{issue_path}' '{status_dir}'\n"
+        f"'{task_id}' '{slug}' '{issue_path}' '{status_dir}' '{base_branch}'\n"
     )
     subprocess.run(['cmux', 'send', '--surface', surface_ref, cmd], check=True)
 

@@ -5,8 +5,9 @@ task_id="$1"
 task_slug="$2"
 abs_issue_path="$3"
 status_dir="$4"
+base_branch="${5:-main}"
 
-${KANBAN_MODEL:-sonnet} "Read the issue spec at @${abs_issue_path}, then implement it in the current worktree (${PWD}/). Do all file edits and the git commit from the current directory; do not switch to the parent worktree for git operations."
+${KANBAN_MODEL:-sonnet} "Base branch is '${base_branch}'. Read the issue spec at @${abs_issue_path}, then implement it in the current worktree (${PWD}/). Do all file edits and the git commit from the current directory; do not switch to the parent worktree for git operations."
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
