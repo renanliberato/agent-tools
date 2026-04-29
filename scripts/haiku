@@ -1,0 +1,2 @@
+#!/bin/zsh
+CLAUDE_CODE_NO_FLICKER=1 exec claude --model=haiku --dangerously-skip-permissions "$@"
