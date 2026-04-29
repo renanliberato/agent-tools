@@ -8,11 +8,11 @@ tasks = {}
 for fname in sorted(os.listdir(issues_dir)):
     if not fname.endswith('.md'):
         continue
-    m = re.match(r'^(\d+)-(.+)\.md$', fname)
+    m = re.match(r'^([^/]+)\.md$', fname)
     if not m:
         continue
-    task_id = m.group(1)
-    slug = fname[:-3]
+    task_id = fname[:-3]  # Full filename stem (e.g. "01-feature-a-setup-db")
+    slug = fname[:-3]     # Same value used for file matching
 
     content = open(os.path.join(issues_dir, fname)).read()
 
@@ -25,7 +25,8 @@ for fname in sorted(os.listdir(issues_dir)):
         if in_blocked:
             if line.startswith('##'):
                 break
-            bm = re.search(r'\[(\d+)-[^\]]+\.md\]', line)
+            # Match any [blah.md] markdown link — extracts the full stem as blocker id
+            bm = re.search(r'\[([^\]]+)\.md\]', line)
             if bm:
                 blockers.append(bm.group(1))
 

@@ -26,25 +26,36 @@ planning_dir="$(cd "$planning_dir" 2>/dev/null && pwd)" || {
 mkdir -p "$archive_base"
 archive_base="$(cd "$archive_base" && pwd)"
 
-prd_file="$planning_dir/prd.md"
 issues_dir="$planning_dir/issues"
 
-# Require at least one of prd.md or issues/
-if [[ ! -f "$prd_file" && ! -d "$issues_dir" ]]; then
-  echo "error: neither prd.md nor issues/ found in $planning_dir" >&2
+# Collect PRD files — support both old prd.md and new prd-<slug>.md
+prd_files=()
+if [[ -f "$planning_dir/prd.md" ]]; then
+  prd_files+=("$planning_dir/prd.md")
+fi
+for f in "$planning_dir"/prd-*.md(N); do
+  if [[ -f "$f" ]]; then
+    prd_files+=("$f")
+  fi
+done
+
+# Require at least one of prd.md / prd-*.md or issues/
+if [[ ${#prd_files[@]} -eq 0 && ! -d "$issues_dir" ]]; then
+  echo "error: no prd.md, prd-*.md, or issues/ found in $planning_dir" >&2
   exit 1
 fi
 
 # Project name = parent directory of .planning
 project_name="$(basename "$(dirname "$planning_dir")")"
 
-# Derive slug
+# Derive slug — pick the first PRD file for heading extraction
 if [[ -n "$explicit_slug" ]]; then
   slug="$explicit_slug"
-elif [[ -f "$prd_file" ]]; then
-  # Extract first non-empty heading from prd.md, strip leading #/spaces
-  raw_heading=$(grep -m1 '^#' "$prd_file" | sed 's/^#* *//')
-  # Slugify: lowercase, replace spaces/special chars with hyphens, collapse runs
+elif [[ ${#prd_files[@]} -gt 0 ]]; then
+  primary_prd="${prd_files[1]}"
+  # Extract first non-empty heading, strip leading #/spaces
+  raw_heading=$(grep -m1 '^#' "$primary_prd" | sed 's/^#* *//')
+  # Slugify: lowercase, replace non-alphanumeric runs with hyphens, trim edges
   slug=$(echo "$raw_heading" \
     | tr '[:upper:]' '[:lower:]' \
     | sed 's/[^a-z0-9]/-/g' \
@@ -67,10 +78,14 @@ mkdir -p "$dest"
 
 copied=0
 
-if [[ -f "$prd_file" ]]; then
-  cp "$prd_file" "$dest/prd.md"
-  echo "  prd.md"
-  (( ++copied )) || true
+# Copy all prd-<slug>.md files with their original names
+if [[ ${#prd_files[@]} -gt 0 ]]; then
+  for f in "${prd_files[@]}"; do
+    fname=$(basename "$f")
+    cp "$f" "$dest/$fname"
+    echo "  $fname"
+    (( ++copied )) || true
+  done
 fi
 
 if [[ -d "$issues_dir" ]]; then

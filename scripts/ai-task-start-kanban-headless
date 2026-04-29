@@ -1,0 +1,24 @@
+#!/usr/bin/env zsh
+# Headless variant of ai-task-start-kanban — no cmux, runs tasks in parallel
+# subprocesses with a live CLI dashboard.
+issues_dir="${1:?Usage: ai-task-start-kanban-headless <issues-folder>}"
+issues_dir="$(cd "$issues_dir" && pwd)"
+
+project_name="$(basename "$PWD")"
+project_dir="$PWD"
+status_dir="/tmp/kanban-${project_name}-$$"
+mkdir -p "$status_dir"
+
+python3 ~/projects/renan/agent-tools/scripts/kanban-parse-deps.py "$issues_dir" \
+  > "${status_dir}/deps.json"
+echo "[kanban] deps parsed → ${status_dir}/deps.json"
+
+export KANBAN_MODEL="${KANBAN_MODEL:-sonnet}"
+export KANBAN_HEADLESS=1
+
+if ! python3 -c "import rich" 2>/dev/null; then
+  echo "[kanban] tip: pip install --user rich  → enables the rich live dashboard (plain mode for now)"
+fi
+
+exec python3 ~/projects/renan/agent-tools/scripts/kanban-orchestrator-headless.py \
+  "$issues_dir" "$project_dir" "$status_dir"
