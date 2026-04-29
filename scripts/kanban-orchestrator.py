@@ -59,9 +59,10 @@ def spawn_task(task_id):
 
     subprocess.run(['cmux', 'rename-tab', '--surface', surface_ref, slug], check=True)
 
+    model = os.environ.get('KANBAN_MODEL', 'sonnet')
     cmd = (
         f"cd '{worktree}' && "
-        f"~/projects/renan/agent-tools/scripts/kanban-run-task.sh "
+        f"KANBAN_MODEL='{model}' ~/projects/renan/agent-tools/scripts/kanban-run-task.sh "
         f"'{task_id}' '{slug}' '{issue_path}' '{status_dir}'\n"
     )
     subprocess.run(['cmux', 'send', '--surface', surface_ref, cmd], check=True)

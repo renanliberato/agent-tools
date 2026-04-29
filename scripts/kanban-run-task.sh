@@ -6,7 +6,7 @@ task_slug="$2"
 abs_issue_path="$3"
 status_dir="$4"
 
-sonnet "Work on @${abs_issue_path} and git commit after finishing."
+${KANBAN_MODEL:-sonnet} "Work on @${abs_issue_path} and git commit after finishing."
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

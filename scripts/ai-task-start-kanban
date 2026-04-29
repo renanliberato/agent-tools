@@ -11,7 +11,7 @@ python3 ~/projects/renan/agent-tools/scripts/kanban-parse-deps.py "$issues_dir" 
 echo "[kanban] deps parsed → ${status_dir}/deps.json"
 
 ws_ref=$(cmux new-workspace --cwd "$project_dir" \
-  --command "python3 ~/projects/renan/agent-tools/scripts/kanban-orchestrator.py '${issues_dir}' '${project_dir}' '${status_dir}' \$CMUX_WORKSPACE_ID" \
+  --command "KANBAN_MODEL='${KANBAN_MODEL:-sonnet}' python3 ~/projects/renan/agent-tools/scripts/kanban-orchestrator.py '${issues_dir}' '${project_dir}' '${status_dir}' \$CMUX_WORKSPACE_ID" \
   | awk '{print $2}')
 cmux rename-workspace --workspace "$ws_ref" "kanban-${project_name}"
 cmux select-workspace --workspace "$ws_ref"
