@@ -255,6 +255,30 @@ def spawn_task(tid):
     subprocess.run(['git', '-C', repo_path, 'worktree', 'add', worktree],
                    check=True, capture_output=True)
 
+    # ── Copy unversioned/ignored files from base repo into new worktree ──
+    # Reads .kanban/config.json in the base repo and copies any files listed
+    # under "copy_on_task_start" (relative paths) from base to the new worktree.
+    kanban_config_path = os.path.join(repo_path, '.kanban', 'config.json')
+    if os.path.exists(kanban_config_path):
+        try:
+            with open(kanban_config_path) as f:
+                kanban_config = json.load(f)
+            files_to_copy = kanban_config.get('copy_on_task_start', [])
+            if files_to_copy:
+                print(f'[kanban] copying {len(files_to_copy)} file(s) from base into worktree ...')
+                for rel_path in files_to_copy:
+                    src = os.path.join(repo_path, rel_path)
+                    dst = os.path.join(worktree, rel_path)
+                    if not os.path.exists(src):
+                        # Warn but don't fail — file may not exist in all environments
+                        print(f'[kanban]   ⚠ source not found: {rel_path}')
+                        continue
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
+                    print(f'[kanban]   ✓ {rel_path}')
+        except (json.JSONDecodeError, OSError) as e:
+            print(f'[kanban]   ⚠ failed to read .kanban/config.json: {e}')
+
     env = os.environ.copy()
     env['KANBAN_MODEL']    = env.get('KANBAN_MODEL', 'sonnet')
     env['KANBAN_HEADLESS'] = '1'
