@@ -7,6 +7,7 @@
 #   ai-task-start-kanban-headless <issues-folder>        # explicit path
 #   ai-task-start-kanban-headless --watch                # watch for new .backlog.md issues
 #   ai-task-start-kanban-headless --watch --poll-seconds 10
+#   ai-task-start-kanban-headless --log-preview-lines 10 # show N last lines of current task's log below table
 #
 # If no argument given, resolves the kanban repo from the current project root.
 
@@ -20,6 +21,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --poll-seconds)
       POLL_SECONDS="$2"
+      shift 2
+      ;;
+    --log-preview-lines)
+      LOG_PREVIEW_LINES="$2"
       shift 2
       ;;
     *)
@@ -63,6 +68,7 @@ ORCHESTRATOR="$HOME/projects/renan/agent-tools/scripts/kanban-orchestrator-headl
 ORCHESTRATOR_ARGS=()
 [[ -n "$WATCH_FLAG" ]] && ORCHESTRATOR_ARGS+=("$WATCH_FLAG")
 [[ -n "${POLL_SECONDS:-}" ]] && ORCHESTRATOR_ARGS+=(--poll-seconds "$POLL_SECONDS")
+[[ -n "${LOG_PREVIEW_LINES:-}" ]] && ORCHESTRATOR_ARGS+=(--log-preview-lines "$LOG_PREVIEW_LINES")
 ORCHESTRATOR_ARGS+=("$issues_dir" "$project_dir" "$status_dir")
 
 exec python3 "$ORCHESTRATOR" "${ORCHESTRATOR_ARGS[@]}"

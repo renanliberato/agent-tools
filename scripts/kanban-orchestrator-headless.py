@@ -1,24 +1,30 @@
 #!/usr/bin/env python3
 """Headless kanban orchestrator. Spawns tasks in parallel without cmux,
-streams status to a live-updating CLI dashboard.
+streams status to a live-updating CLI dashboard with a log preview below
+the task table.
 
 Usage:
   kanban-orchestrator-headless.py <issues_dir> <project_dir> <status_dir>
   kanban-orchestrator-headless.py --watch <issues_dir> <project_dir> <status_dir>
   kanban-orchestrator-headless.py --watch --poll-seconds 10 <...>
+  kanban-orchestrator-headless.py --log-preview-lines 10 <...>
 
 Flags:
-  --watch            Keep alive after initial batch settles; watch for new
-                     .backlog.md issues and auto-start them.
-  --poll-seconds N   Watch loop poll interval in seconds (default: 5).
+  --watch               Keep alive after initial batch settles; watch for new
+                        .backlog.md issues and auto-start them.
+  --poll-seconds N      Watch loop poll interval in seconds (default: 5).
+  --log-preview-lines N Show the last N lines of the most recently updated
+                        task's log below the table (default: 5, 0 to disable).
 """
-import sys, os, json, subprocess, time, threading, signal, shutil
+import sys, os, json, subprocess, time, threading, signal, shutil, pty, select, errno
 from datetime import datetime
 
 try:
     from rich.live import Live
     from rich.table import Table
     from rich.console import Console
+    from rich.panel import Panel
+    from rich.text import Text
     RICH = True
 except ImportError:
     RICH = False
@@ -26,6 +32,7 @@ except ImportError:
 # --- Argument parsing ---
 watch_mode = False
 poll_seconds = 5
+log_preview_lines = 5  # show last N lines of current task's log below table; 0 = off
 positional = []
 i = 1
 while i < len(sys.argv):
@@ -36,6 +43,12 @@ while i < len(sys.argv):
     elif a == '--poll-seconds' and i + 1 < len(sys.argv):
         try:
             poll_seconds = int(sys.argv[i + 1])
+        except ValueError:
+            pass
+        i += 2
+    elif a == '--log-preview-lines' and i + 1 < len(sys.argv):
+        try:
+            log_preview_lines = max(0, int(sys.argv[i + 1]))
         except ValueError:
             pass
         i += 2
@@ -70,6 +83,7 @@ for tid, info in tasks.items():
         'ended_at':   None,
         'log_path':   os.path.join(status_dir, f"{tid}.log"),
         'last_line':  '',
+        'last_line_updated_at': 0.0,  # timestamp of most recent output line
         'proc':       None,
         'worktree':   None,
     }
@@ -77,6 +91,57 @@ for tid, info in tasks.items():
 PARSER_SCRIPT = os.path.expanduser(
     '~/projects/renan/agent-tools/scripts/kanban-parse-deps.py'
 )
+
+# ── Log preview cache ────────────────────────────────────────────────
+_log_preview_cache = {
+    'tid': None,
+    'size': -1,
+    'mtime': 0,
+    'lines': [],
+}
+
+
+def read_log_preview(tid, n_lines):
+    """Return the last *n_lines* lines from a task's log file, cached by size+mtime."""
+    if n_lines <= 0 or not tid:
+        return []
+    log_path = task_state[tid]['log_path']
+    if not os.path.exists(log_path):
+        return []
+    try:
+        st = os.stat(log_path)
+    except OSError:
+        return []
+
+    cache = _log_preview_cache
+    if cache['tid'] == tid and cache['size'] == st.st_size and cache['mtime'] == st.st_mtime:
+        return cache['lines'][-n_lines:]
+
+    try:
+        with open(log_path, 'rb') as f:
+            raw = f.read()
+        lines = raw.decode('utf-8', errors='replace').splitlines()
+        cache['tid'] = tid
+        cache['size'] = st.st_size
+        cache['mtime'] = st.st_mtime
+        cache['lines'] = lines
+        return lines[-n_lines:]
+    except OSError:
+        return []
+
+
+def find_preview_task():
+    """Pick the task whose log to preview: the RUNNING task with the most recent output,
+    or if none running, the most recently completed/failed task."""
+    best_tid = None
+    best_time = 0.0
+    with state_lock:
+        for tid, st in task_state.items():
+            updated = st.get('last_line_updated_at', 0.0)
+            if updated > best_time:
+                best_time = updated
+                best_tid = tid
+    return best_tid
 
 
 # --- Helpers ---
@@ -96,7 +161,6 @@ def promote_to_active(tid):
     active_path  = os.path.join(issues_dir, tid + '.active.md')
     if os.path.exists(backlog_path):
         os.rename(backlog_path, active_path)
-        # Commit state transition to kanban repo
         kanban_dir = os.path.dirname(issues_dir)
         subprocess.run(
             ['git', '-C', kanban_dir, 'add', '-A'],
@@ -113,7 +177,6 @@ def promote_to_active(tid):
 def has_failed_blocker(tid):
     for b in task_state[tid]['blockers']:
         if b not in task_state:
-            # Blocker not in graph — it's either already done (has .done.md) or doesn't exist yet
             continue
         if task_state[b]['status'] in ('FAILED', 'SKIPPED'):
             return True
@@ -128,7 +191,6 @@ def is_unblocked(tid):
             if task_state[b]['status'] != 'DONE':
                 return False
         else:
-            # Blocker not tracked — check if .done.md exists on disk
             done_path = os.path.join(issues_dir, f"{b}.done.md")
             if not os.path.exists(done_path):
                 return False
@@ -136,7 +198,6 @@ def is_unblocked(tid):
 
 
 def get_repo_for_tid(tid):
-    """Return the repo path for a task (from issue frontmatter `repo:`), falling back to project_dir."""
     repo = tasks.get(tid, {}).get('repo', '')
     if repo:
         return os.path.expanduser(repo)
@@ -144,8 +205,6 @@ def get_repo_for_tid(tid):
 
 
 def get_branch_for_tid(tid):
-    """Return the branch for a task (from issue frontmatter `branch:`),
-    or the repo's current HEAD branch."""
     branch = tasks.get(tid, {}).get('branch', '')
     if branch:
         return branch
@@ -173,7 +232,6 @@ def spawn_task(tid):
     st         = task_state[tid]
     slug       = st['slug']
 
-    # Resolve issue file — promote from backlog if needed
     issue_path = find_issue_file(tid)
     if issue_path is None:
         issue_path = promote_to_active(tid)
@@ -201,17 +259,25 @@ def spawn_task(tid):
     env['KANBAN_MODEL']    = env.get('KANBAN_MODEL', 'sonnet')
     env['KANBAN_HEADLESS'] = '1'
 
-    log_f = open(st['log_path'], 'w')
+    log_f = open(st['log_path'], 'wb')
     cmd = [
         os.path.expanduser('~/projects/renan/agent-tools/scripts/kanban-run-task.sh'),
         tid, slug, issue_path, status_dir, base_branch,
     ]
+
+    # Use a pseudo-terminal so child processes (pi, Node.js tools) don't buffer
+    # their output when stdout is a pipe. pty makes them think they're talking
+    # to a terminal, giving us line-buffered output.
+    master_fd, slave_fd = pty.openpty()
     proc = subprocess.Popen(
         cmd, cwd=worktree, env=env,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1,
+        stdin=subprocess.DEVNULL,
+        stdout=slave_fd,
+        stderr=subprocess.STDOUT,
+        close_fds=True,
         start_new_session=True,
     )
+    os.close(slave_fd)
 
     with state_lock:
         st['status']     = 'RUNNING'
@@ -220,17 +286,52 @@ def spawn_task(tid):
         st['worktree']   = worktree
 
     def tail():
+        buf = b''
+        pty_dead = False
         try:
-            for line in proc.stdout:
+            while (proc.poll() is None or buf) and not pty_dead:
+                r, _, _ = select.select([master_fd], [], [], 0.5)
                 if shutdown.is_set():
                     break
-                log_f.write(line)
+                if r:
+                    try:
+                        data = os.read(master_fd, 65536)
+                    except OSError as e:
+                        if e.errno == errno.EIO:
+                            pty_dead = True
+                            break
+                        raise
+                    if not data:
+                        break
+                    buf += data
+                    while b'\n' in buf:
+                        line_bytes, buf = buf.split(b'\n', 1)
+                        line = line_bytes.decode('utf-8', errors='replace')
+                        log_f.write(line.encode('utf-8'))
+                        log_f.write(b'\n')
+                        log_f.flush()
+                        clean = line.rstrip()
+                        if clean:
+                            now = time.time()
+                            with state_lock:
+                                st['last_line'] = clean[:200]
+                                st['last_line_updated_at'] = now
+            if buf:
+                rest = buf.decode('utf-8', errors='replace')
+                log_f.write(rest.encode('utf-8'))
+                log_f.write(b'\n')
                 log_f.flush()
-                clean = line.rstrip()
+                clean = rest.rstrip()
                 if clean:
+                    now = time.time()
                     with state_lock:
                         st['last_line'] = clean[:200]
+                        st['last_line_updated_at'] = now
         finally:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
             log_f.close()
 
     threading.Thread(target=tail, daemon=True).start()
@@ -282,7 +383,6 @@ def all_settled():
 
 
 def reparse_deps():
-    """Re-run kanban-parse-deps.py and return new tasks not yet tracked."""
     try:
         result = subprocess.run(
             [sys.executable, PARSER_SCRIPT, issues_dir],
@@ -297,7 +397,6 @@ def reparse_deps():
     for tid, info in new_deps['tasks'].items():
         if tid in known_ids:
             continue
-        # Double-check not already .done.md (edge case)
         done_path = os.path.join(issues_dir, tid + '.done.md')
         if os.path.exists(done_path):
             known_ids.add(tid)
@@ -307,7 +406,6 @@ def reparse_deps():
 
 
 def add_new_tasks(new_tasks):
-    """Add newly discovered tasks to task_state and global tasks dict."""
     for tid, info in new_tasks.items():
         task_state[tid] = {
             'slug':       info['slug'],
@@ -317,6 +415,7 @@ def add_new_tasks(new_tasks):
             'ended_at':   None,
             'log_path':   os.path.join(status_dir, f"{tid}.log"),
             'last_line':  '',
+            'last_line_updated_at': 0.0,
             'proc':       None,
             'worktree':   None,
         }
@@ -357,6 +456,43 @@ def counts():
     return c
 
 
+# ── Log preview helpers ──────────────────────────────────────────────
+
+def _format_log_preview_plain(tid, n_lines, width):
+    """Return a list of plain-text lines for the log preview section."""
+    if n_lines <= 0 or not tid:
+        return []
+    lines = read_log_preview(tid, n_lines)
+    if not lines:
+        return []
+    slug = task_state[tid]['slug']
+    log_path = task_state[tid]['log_path']
+    out = [f"── Log preview: {tid} ({slug}) ──"]
+    out.append(f"  File: {log_path}")
+    for l in lines:
+        out.append(f"  {l[:width-4]}")
+    return out
+
+
+def _format_log_preview_rich(tid, n_lines):
+    """Return a rich Panel for the log preview section, or None."""
+    if n_lines <= 0 or not tid:
+        return None
+    lines = read_log_preview(tid, n_lines)
+    if not lines:
+        return None
+    slug = task_state[tid]['slug']
+    log_path = task_state[tid]['log_path']
+    # First line: the file path in dim style, then the log lines
+    path_line = Text(f"File: {log_path}", style='dim')
+    log_lines = Text('\n'.join('  ' + l for l in lines))
+    content = Text('\n').join([path_line, log_lines])
+    return Panel(content, title=f"Log preview: {tid} ({slug})", border_style='dim')
+
+
+# ── Renderers ────────────────────────────────────────────────────────
+
+
 def render_table(watching=False):
     c       = counts()
     elapsed = fmt_elapsed(time.time() - start_time)
@@ -391,6 +527,13 @@ def render_table(watching=False):
                 task_time(st),
                 st['last_line'],
             )
+
+    # Append log preview panel below the table
+    preview_tid = find_preview_task()
+    preview = _format_log_preview_rich(preview_tid, log_preview_lines)
+    if preview:
+        from rich.console import Group
+        return Group(t, preview)
     return t
 
 
@@ -416,7 +559,18 @@ def render_plain(watching=False):
                 f"{st['status']:<8} {task_time(st):>7}  "
                 f"{st['last_line'][:last_w]}"
             )
+
+    # Append log preview below the table
+    preview_tid = find_preview_task()
+    preview_lines = _format_log_preview_plain(preview_tid, log_preview_lines, width)
+    if preview_lines:
+        out.append("")
+        out.extend(preview_lines)
+
     return "\n".join(out)
+
+
+# ── Signal handling ──────────────────────────────────────────────────
 
 
 def shutdown_handler(signum, frame):
@@ -450,8 +604,10 @@ signal.signal(signal.SIGINT,  shutdown_handler)
 signal.signal(signal.SIGTERM, shutdown_handler)
 
 
+# ── Scheduling loops ─────────────────────────────────────────────────
+
+
 def scheduling_loop(live=None, plain_mode=False):
-    """Run scheduling loop until all tasks settle or shutdown."""
     if live:
         while not all_settled() and not shutdown.is_set():
             time.sleep(0.25)
@@ -470,25 +626,15 @@ def scheduling_loop(live=None, plain_mode=False):
 
 
 def watch_loop(live=None, plain_mode=False):
-    """After initial batch settles, watch for new .backlog.md files."""
     while not shutdown.is_set():
-        # Before sleeping, check if any RUNNING tasks completed
         check_completions()
-
-        # Re-parse for new issues
         new_tasks = reparse_deps()
         if new_tasks:
             add_new_tasks(new_tasks)
             print(f"[kanban] ✦ {len(new_tasks)} new issue(s) detected", flush=True)
-
-        # Try to spawn any newly unblocked tasks
         try_spawn_unblocked()
-
-        # Re-check all .backlog.md tasks — their blockers may now be met
-        # even without new tasks (e.g. a just-completed task unblocked something)
         recheck_pending_backlog()
 
-        # Update dashboard
         if live:
             live.update(render_table(watching=True))
         elif plain_mode:
@@ -497,16 +643,10 @@ def watch_loop(live=None, plain_mode=False):
 
         if shutdown.is_set():
             break
-
         time.sleep(poll_seconds)
 
 
 def recheck_pending_backlog():
-    """Check if any PENDING tasks became unblocked (without new issues arriving).
-
-    This is needed when a task completes and its completion unblocks an existing
-    .backlog.md issue that was already in the task graph.
-    """
     for tid in sorted(tasks.keys()):
         st = task_state[tid]
         if st['status'] != 'PENDING':
@@ -516,12 +656,13 @@ def recheck_pending_backlog():
                 st['status'] = 'SKIPPED'
             continue
         if is_unblocked(tid):
-            # Task is unblocked but not yet spawned — spawn it
             spawn_task(tid)
 
 
+# ── Main ─────────────────────────────────────────────────────────────
+
+
 def run_loop():
-    # Phase 1: schedule and run all existing issues
     try_spawn_unblocked()
 
     if RICH:
@@ -551,7 +692,6 @@ def run_loop():
         print(f"[kanban] logs: {status_dir}", flush=True)
         sys.exit(0 if c['FAILED'] == 0 and c['SKIPPED'] == 0 else 1)
     else:
-        # In watch mode, we never exit normally
         c = counts()
         print(
             f"\n[kanban] settled in {fmt_elapsed(time.time() - start_time)} — "
