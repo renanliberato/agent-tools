@@ -96,6 +96,16 @@ def promote_to_active(tid):
     active_path  = os.path.join(issues_dir, tid + '.active.md')
     if os.path.exists(backlog_path):
         os.rename(backlog_path, active_path)
+        # Commit state transition to kanban repo
+        kanban_dir = os.path.dirname(issues_dir)
+        subprocess.run(
+            ['git', '-C', kanban_dir, 'add', '-A'],
+            check=False, capture_output=True,
+        )
+        subprocess.run(
+            ['git', '-C', kanban_dir, 'commit', '-m', f'promote: {tid} backlog→active'],
+            check=False, capture_output=True,
+        )
         return active_path
     return None
 

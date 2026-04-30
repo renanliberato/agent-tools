@@ -74,6 +74,12 @@ if [[ "$answer" == "y" ]]; then
 
   mv "${abs_issue_path}" "${issues_dir}/${done_fname}"
   echo "[kanban] ✓ Issue transitioned: $(basename "${abs_issue_path}") → ${done_fname}"
+
+  # Commit state transition to kanban repo
+  kanban_dir="$(dirname "${issues_dir}")"
+  git -C "${kanban_dir}" add -A
+  git -C "${kanban_dir}" commit -m "done: ${task_id}-${task_slug}"
+  echo "[kanban] ✓ Committed to kanban repo."
   echo "[kanban] ✓ Marked as done."
 else
   touch "${status_dir}/${task_id}.failed"

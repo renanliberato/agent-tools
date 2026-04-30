@@ -158,15 +158,24 @@ Pick `type` based on the seed: a new capability is `feature`, a defect is `bug`,
 
 **Important:** Remove the `## Blocked by` section entirely (not just leave it empty) when the issue has no blockers — the parser reads its presence as a signal.
 
-### 9. Confirm
+### 9. Commit and confirm
 
-Tell the user:
+Commit the new issue file to the kanban repo:
+
+```bash
+cd "$KANBAN_DIR"
+git add issues/
+git commit -m "backlog: add $ID-$slug"
+```
+
+Then tell the user:
 
 - The full file path that was written (including the kanban repo path and ID)
 - The current count of issues in `$KANBAN_DIR/issues/` across all states
+- The commit hash
 - If the issue has blockers, list them
 
-Do not commit to the kanban repo. Do not run `to-prd` — PRD creation is a separate step.
+Do not run `to-prd` — PRD creation is a separate step.
 
 ## Guardrails
 
@@ -174,7 +183,7 @@ Do not commit to the kanban repo. Do not run `to-prd` — PRD creation is a sepa
 - Never modify or delete other issues — this skill only adds.
 - Never reuse an ID — the tool guarantees uniqueness via `flock`.
 - Do not invent acceptance criteria unless the user explicitly provides them. That detail belongs in the active state.
-- Issues always get the `.backlog.md` suffix at creation time. State transitions (`.backlog.md` → `.active.md` → `.done.md`) are handled by other skills or manual `git mv`.
+- Issues always get the `.backlog.md` suffix at creation time. State transitions (`.backlog.md` → `.active.md` → `.done.md`) are handled by other skills or scripts (they also commit to the kanban repo).
 - If the user invokes this skill repeatedly in one session, treat each invocation independently — fresh slug, fresh ID reservation, fresh grilling pass.
 - **Always check for blockers** in step 7 before writing the file. If the issue has dependencies, they must be captured in `## Blocked by` for the orchestrator to schedule correctly.
 - **Remove `## Blocked by` entirely** (not just leave it empty) when there are no blockers. An empty section is treated as a signal by `kanban-parse-deps.py`.
