@@ -46,7 +46,9 @@ if [[ "$answer" == "y" ]]; then
   mkdir -p "${PWD}/.claude/agents"
   agent_src="$(dirname "$0")/../.claude/agents"
   cp -r "${agent_src}/." "${PWD}/.claude/agents/"
-  KANBAN_BASE_BRANCH="${base_branch}" pi -p "@.claude/agents/kanban-commit.md"
+  KANBAN_BASE_BRANCH="${base_branch}" pi -p "EXECUTE the following agent instructions now. Do NOT describe or discuss them. Do NOT ask what to do. Just run every step in order. KANBAN_BASE_BRANCH=${base_branch}.
+
+@.claude/agents/kanban-commit.md"
   rmdir "${commit_lock}"
   touch "${status_dir}/${task_id}.done"
 
