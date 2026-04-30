@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
 """Headless kanban orchestrator. Spawns tasks in parallel without cmux,
-streams status to a live-updating CLI dashboard."""
+streams status to a live-updating CLI dashboard.
+
+Usage:
+  kanban-orchestrator-headless.py <issues_dir> <project_dir> <status_dir>
+  kanban-orchestrator-headless.py --watch <issues_dir> <project_dir> <status_dir>
+  kanban-orchestrator-headless.py --watch --poll-seconds 10 <...>
+
+Flags:
+  --watch            Keep alive after initial batch settles; watch for new
+                     .backlog.md issues and auto-start them.
+  --poll-seconds N   Watch loop poll interval in seconds (default: 5).
+"""
 import sys, os, json, subprocess, time, threading, signal, shutil
 from datetime import datetime
 
@@ -12,9 +23,31 @@ try:
 except ImportError:
     RICH = False
 
-issues_dir  = sys.argv[1]
-project_dir = sys.argv[2]
-status_dir  = sys.argv[3]
+# --- Argument parsing ---
+watch_mode = False
+poll_seconds = 5
+positional = []
+i = 1
+while i < len(sys.argv):
+    a = sys.argv[i]
+    if a == '--watch':
+        watch_mode = True
+        i += 1
+    elif a == '--poll-seconds' and i + 1 < len(sys.argv):
+        try:
+            poll_seconds = int(sys.argv[i + 1])
+        except ValueError:
+            pass
+        i += 2
+    elif a.startswith('--'):
+        i += 1  # skip unknown flags
+    else:
+        positional.append(a)
+        i += 1
+
+issues_dir  = positional[0]
+project_dir = positional[1]
+status_dir  = positional[2]
 
 deps  = json.load(open(os.path.join(status_dir, 'deps.json')))
 tasks = deps['tasks']
@@ -22,6 +55,9 @@ tasks = deps['tasks']
 start_time = time.time()
 state_lock = threading.Lock()
 shutdown   = threading.Event()
+
+# Track all known issue IDs (for watch mode dedup)
+known_ids = set(tasks.keys())
 
 # Per-task state
 task_state = {}
@@ -38,9 +74,36 @@ for tid, info in tasks.items():
         'worktree':   None,
     }
 
+PARSER_SCRIPT = os.path.expanduser(
+    '~/projects/renan/agent-tools/scripts/kanban-parse-deps.py'
+)
+
+
+# --- Helpers ---
+
+def find_issue_file(tid):
+    """Return the path of the issue file for given task ID, or None."""
+    for suffix in ('.backlog.md', '.active.md'):
+        path = os.path.join(issues_dir, tid + suffix)
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def promote_to_active(tid):
+    """Rename <tid>.backlog.md → <tid>.active.md. Returns active path or None."""
+    backlog_path = os.path.join(issues_dir, tid + '.backlog.md')
+    active_path  = os.path.join(issues_dir, tid + '.active.md')
+    if os.path.exists(backlog_path):
+        os.rename(backlog_path, active_path)
+        return active_path
+    return None
+
 
 def has_failed_blocker(tid):
     for b in task_state[tid]['blockers']:
+        if b not in task_state:
+            continue  # blocker not created yet — cannot be failed
         if task_state[b]['status'] in ('FAILED', 'SKIPPED'):
             return True
         if has_failed_blocker(b):
@@ -49,7 +112,12 @@ def has_failed_blocker(tid):
 
 
 def is_unblocked(tid):
-    return all(task_state[b]['status'] == 'DONE' for b in task_state[tid]['blockers'])
+    for b in task_state[tid]['blockers']:
+        if b not in task_state:
+            return False  # blocker doesn't exist yet
+        if task_state[b]['status'] != 'DONE':
+            return False
+    return True
 
 
 def get_base_branch():
@@ -74,8 +142,21 @@ def cleanup_worktree(tid):
 def spawn_task(tid):
     st         = task_state[tid]
     slug       = st['slug']
-    issue_path = os.path.join(issues_dir, slug + '.md')
-    worktree   = os.path.join(
+
+    # Resolve issue file — promote from backlog if needed
+    issue_path = find_issue_file(tid)
+    if issue_path is None:
+        issue_path = promote_to_active(tid)
+    elif issue_path.endswith('.backlog.md'):
+        issue_path = promote_to_active(tid)
+
+    if issue_path is None:
+        with state_lock:
+            st['status'] = 'FAILED'
+            st['last_line'] = 'no issue file found'
+        return
+
+    worktree = os.path.join(
         os.path.dirname(project_dir),
         f"{os.path.basename(project_dir)}-{slug}",
     )
@@ -168,6 +249,49 @@ def all_settled():
     )
 
 
+def reparse_deps():
+    """Re-run kanban-parse-deps.py and return new tasks not yet tracked."""
+    try:
+        result = subprocess.run(
+            [sys.executable, PARSER_SCRIPT, issues_dir],
+            capture_output=True, text=True, check=True, timeout=30,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        print(f"[kanban] deps re-parse error: {e}", flush=True)
+        return {}
+
+    new_deps = json.loads(result.stdout)
+    new_tasks = {}
+    for tid, info in new_deps['tasks'].items():
+        if tid in known_ids:
+            continue
+        # Double-check not already .done.md (edge case)
+        done_path = os.path.join(issues_dir, tid + '.done.md')
+        if os.path.exists(done_path):
+            known_ids.add(tid)
+            continue
+        new_tasks[tid] = info
+    return new_tasks
+
+
+def add_new_tasks(new_tasks):
+    """Add newly discovered tasks to task_state and global tasks dict."""
+    for tid, info in new_tasks.items():
+        task_state[tid] = {
+            'slug':       info['slug'],
+            'blockers':   info['blockers'],
+            'status':     'PENDING',
+            'started_at': None,
+            'ended_at':   None,
+            'log_path':   os.path.join(status_dir, f"{tid}.log"),
+            'last_line':  '',
+            'proc':       None,
+            'worktree':   None,
+        }
+        tasks[tid] = info
+        known_ids.add(tid)
+
+
 def fmt_elapsed(seconds):
     seconds = max(0, int(seconds))
     m, s = divmod(seconds, 60)
@@ -201,13 +325,14 @@ def counts():
     return c
 
 
-def render_table():
+def render_table(watching=False):
     c       = counts()
     elapsed = fmt_elapsed(time.time() - start_time)
     width   = shutil.get_terminal_size((120, 30)).columns
     last_w  = max(20, width - 60)
 
-    title = (f"kanban (headless)  elapsed {elapsed}  "
+    mode_tag = "watching" if watching else "headless"
+    title = (f"kanban ({mode_tag})  elapsed {elapsed}  "
              f"[green]✓ {c['DONE']}[/]  "
              f"[yellow]⚙ {c['RUNNING']}[/]  "
              f"· {c['PENDING']}  "
@@ -237,13 +362,14 @@ def render_table():
     return t
 
 
-def render_plain():
+def render_plain(watching=False):
     c       = counts()
     elapsed = fmt_elapsed(time.time() - start_time)
     width   = shutil.get_terminal_size((120, 30)).columns
+    mode_tag = "watching" if watching else "headless"
     out = [
         "\033[2J\033[H",
-        f"kanban (headless)  elapsed={elapsed}  "
+        f"kanban ({mode_tag})  elapsed={elapsed}  "
         f"done={c['DONE']} run={c['RUNNING']} pend={c['PENDING']} "
         f"fail={c['FAILED']} skip={c['SKIPPED']}",
         "-" * min(width, 120),
@@ -292,36 +418,116 @@ signal.signal(signal.SIGINT,  shutdown_handler)
 signal.signal(signal.SIGTERM, shutdown_handler)
 
 
-def run_loop():
-    try_spawn_unblocked()
-    if RICH:
-        console = Console()
-        with Live(render_table(), console=console,
-                  refresh_per_second=4, screen=False) as live:
-            while not all_settled() and not shutdown.is_set():
-                time.sleep(0.25)
-                check_completions()
-                try_spawn_unblocked()
-                live.update(render_table())
-            live.update(render_table())
+def scheduling_loop(live=None, plain_mode=False):
+    """Run scheduling loop until all tasks settle or shutdown."""
+    if live:
+        while not all_settled() and not shutdown.is_set():
+            time.sleep(0.25)
+            check_completions()
+            try_spawn_unblocked()
+            live.update(render_table(watching=False))
+        live.update(render_table(watching=False))
     else:
         while not all_settled() and not shutdown.is_set():
             check_completions()
             try_spawn_unblocked()
-            sys.stdout.write(render_plain() + "\n")
+            sys.stdout.write(render_plain(watching=False) + "\n")
             sys.stdout.flush()
             time.sleep(0.5)
-        sys.stdout.write(render_plain() + "\n")
+        sys.stdout.write(render_plain(watching=False) + "\n")
+
+
+def watch_loop(live=None, plain_mode=False):
+    """After initial batch settles, watch for new .backlog.md files."""
+    while not shutdown.is_set():
+        # Before sleeping, check if any RUNNING tasks completed
+        check_completions()
+
+        # Re-parse for new issues
+        new_tasks = reparse_deps()
+        if new_tasks:
+            add_new_tasks(new_tasks)
+            print(f"[kanban] ✦ {len(new_tasks)} new issue(s) detected", flush=True)
+
+        # Try to spawn any newly unblocked tasks
+        try_spawn_unblocked()
+
+        # Re-check all .backlog.md tasks — their blockers may now be met
+        # even without new tasks (e.g. a just-completed task unblocked something)
+        recheck_pending_backlog()
+
+        # Update dashboard
+        if live:
+            live.update(render_table(watching=True))
+        elif plain_mode:
+            sys.stdout.write(render_plain(watching=True) + "\n")
+            sys.stdout.flush()
+
+        if shutdown.is_set():
+            break
+
+        time.sleep(poll_seconds)
+
+
+def recheck_pending_backlog():
+    """Check if any PENDING tasks became unblocked (without new issues arriving).
+
+    This is needed when a task completes and its completion unblocks an existing
+    .backlog.md issue that was already in the task graph.
+    """
+    for tid in sorted(tasks.keys()):
+        st = task_state[tid]
+        if st['status'] != 'PENDING':
+            continue
+        if has_failed_blocker(tid):
+            with state_lock:
+                st['status'] = 'SKIPPED'
+            continue
+        if is_unblocked(tid):
+            # Task is unblocked but not yet spawned — spawn it
+            spawn_task(tid)
+
+
+def run_loop():
+    # Phase 1: schedule and run all existing issues
+    try_spawn_unblocked()
+
+    if RICH:
+        console = Console()
+        with Live(render_table(watching=False), console=console,
+                  refresh_per_second=4, screen=False) as live:
+            scheduling_loop(live=live)
+
+            if watch_mode and not shutdown.is_set():
+                print(f"\n[kanban] initial batch settled — entering watch mode (poll every {poll_seconds}s)", flush=True)
+                watch_loop(live=live)
+    else:
+        scheduling_loop(plain_mode=True)
+
+        if watch_mode and not shutdown.is_set():
+            print(f"\n[kanban] initial batch settled — entering watch mode (poll every {poll_seconds}s)", flush=True)
+            watch_loop(plain_mode=True)
+
+    if not watch_mode:
+        c = counts()
+        elapsed = fmt_elapsed(time.time() - start_time)
+        print(
+            f"\n[kanban] settled in {elapsed}  "
+            f"done={c['DONE']} failed={c['FAILED']} skipped={c['SKIPPED']}",
+            flush=True,
+        )
+        print(f"[kanban] logs: {status_dir}", flush=True)
+        sys.exit(0 if c['FAILED'] == 0 and c['SKIPPED'] == 0 else 1)
+    else:
+        # In watch mode, we never exit normally
+        c = counts()
+        print(
+            f"\n[kanban] settled in {fmt_elapsed(time.time() - start_time)} — "
+            f"done={c['DONE']} failed={c['FAILED']} skipped={c['SKIPPED']} — "
+            f"watching for new issues… (Ctrl+C to exit)",
+            flush=True,
+        )
 
 
 if __name__ == '__main__':
     run_loop()
-    c = counts()
-    elapsed = fmt_elapsed(time.time() - start_time)
-    print(
-        f"\n[kanban] settled in {elapsed}  "
-        f"done={c['DONE']} failed={c['FAILED']} skipped={c['SKIPPED']}",
-        flush=True,
-    )
-    print(f"[kanban] logs: {status_dir}", flush=True)
-    sys.exit(0 if c['FAILED'] == 0 and c['SKIPPED'] == 0 else 1)

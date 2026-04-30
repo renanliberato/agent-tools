@@ -48,7 +48,7 @@ for fname in sorted(os.listdir(issues_dir)):
                 blockers.append(bm.group(1))
             # Also match bare ID references like "000042" or "000042-add-login"
             bare = re.search(r'\b(\d{6})(?:\b|-)', line)
-            if bare and bare.group(1) not in [b.split('.')[0] for b in blockers]:
+            if bare and not any(b.startswith(bare.group(1)) for b in blockers):
                 blockers.append(bare.group(1))
 
     tasks[task_id] = {'slug': slug, 'blockers': blockers, 'state': state}

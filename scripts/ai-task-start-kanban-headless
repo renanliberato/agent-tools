@@ -5,11 +5,32 @@
 # Usage:
 #   ai-task-start-kanban-headless                        # uses <project>-kanban/issues/ (all .active.md + .backlog.md)
 #   ai-task-start-kanban-headless <issues-folder>        # explicit path
+#   ai-task-start-kanban-headless --watch                # watch for new .backlog.md issues
+#   ai-task-start-kanban-headless --watch --poll-seconds 10
 #
 # If no argument given, resolves the kanban repo from the current project root.
 
-if [[ -n "$1" ]]; then
-  issues_dir="${1}"
+WATCH_FLAG=""
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --watch|-w)
+      WATCH_FLAG="--watch"
+      shift
+      ;;
+    --poll-seconds)
+      POLL_SECONDS="$2"
+      shift 2
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ -n "${POSITIONAL_ARGS[1]:-}" ]]; then
+  issues_dir="${POSITIONAL_ARGS[1]}"
 else
   project_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
   project_dir="$(cd "$project_dir" && pwd)"
@@ -38,5 +59,10 @@ if ! python3 -c "import rich" 2>/dev/null; then
   echo "[kanban] tip: pip install --user rich  → enables the rich live dashboard (plain mode for now)"
 fi
 
-exec python3 ~/projects/renan/agent-tools/scripts/kanban-orchestrator-headless.py \
-  "$issues_dir" "$project_dir" "$status_dir"
+ORCHESTRATOR="$HOME/projects/renan/agent-tools/scripts/kanban-orchestrator-headless.py"
+ORCHESTRATOR_ARGS=()
+[[ -n "$WATCH_FLAG" ]] && ORCHESTRATOR_ARGS+=("$WATCH_FLAG")
+[[ -n "${POLL_SECONDS:-}" ]] && ORCHESTRATOR_ARGS+=(--poll-seconds "$POLL_SECONDS")
+ORCHESTRATOR_ARGS+=("$issues_dir" "$project_dir" "$status_dir")
+
+exec python3 "$ORCHESTRATOR" "${ORCHESTRATOR_ARGS[@]}"
