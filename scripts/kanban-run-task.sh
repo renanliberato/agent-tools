@@ -42,7 +42,7 @@ if [[ "$answer" == "y" ]]; then
     sleep 5
   done
   echo "[kanban] Running commit agent..."
-  KANBAN_BASE_BRANCH="${base_branch}" pi -p "@claude/agents/kanban-commit.md"
+  KANBAN_BASE_BRANCH="${base_branch}" pi -p "@.claude/agents/kanban-commit.md"
   rmdir "${commit_lock}"
   touch "${status_dir}/${task_id}.done"
   echo "[kanban] ✓ Marked as done."
