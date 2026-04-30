@@ -1,13 +1,13 @@
 ---
 name: session-to-backlog
-description: Read the last pi agent session for the current project, extract what was discussed or done, and create backlog entries (via the backlog-add format) for any work items, bugs, or follow-ups it uncovered. Use when a session ended without wrapping everything up, when the user wants to capture session outcomes into the backlog, or when you need to preserve context across sessions.
+description: Read the last pi agent session for the current project, extract what was discussed or done, and create issue files (as <project>-kanban/issues/<id>-<slug>.backlog.md) for any work items, bugs, or follow-ups it uncovered. Use when a session ended without wrapping everything up, when the user wants to capture session outcomes, or when you need to preserve context across sessions.
 ---
 
 # Session to Backlog
 
-Read the most recent pi session for the current project, derive standalone work items from it, and write each as a `.planning/backlog/<slug>.md` entry. This bridges the gap between a finished pi session and the `backlog-add` / `backlog-promote` / `to-prd` workflow.
+Read the most recent pi session for the current project, derive standalone work items from it, and write each as an issue in the project's kanban repo.
 
-**This skill runs fully autonomously.** It does not prompt the user for confirmation — it reads the session, derives items, and writes backlog entries. Design for headless / kanban-style invocation.
+**This skill runs fully autonomously.** It does not prompt the user for confirmation.
 
 ## Process
 
@@ -45,29 +45,29 @@ Read the `.jsonl` file line by line. Each line is a JSON event.
 | Role | Content structure | What to extract |
 |------|-------------------|-----------------|
 | `user` | `content` is a list of parts, one of which is `{"type":"text","text":"..."}` | The user's request text |
-| `assistant` | `content` is a list of parts with these `type`s: `thinking`, `text`, `toolCall` | The **`text`** parts (actual response). Also scan **`toolCall`** parts for which tools were invoked (`name` field, e.g. `bash`, `edit`, `read`) to understand what work was done. Optionally scan **`thinking`** parts for reasoning traces — can reveal what the agent considered or discovered, which informs backlog items. |
-| `toolResult` | `content` is text or a list of parts. Has fields: `toolName`, `isError` | **Error signals only** — check `isError`. If `true`, the session hit a bug; note it. Otherwise skip the content (raw file dumps and command output are noise for backlog items). |
+| `assistant` | `content` is a list of parts with these `type`s: `thinking`, `text`, `toolCall` | The **`text`** parts (actual response). Also scan **`toolCall`** parts for which tools were invoked (`name` field, e.g. `bash`, `edit`, `read`) to understand what work was done. Optionally scan **`thinking`** parts for reasoning traces — can reveal what the agent considered or discovered, which informs items. |
+| `toolResult` | `content` is text or a list of parts. Has fields: `toolName`, `isError` | **Error signals only** — check `isError`. If `true`, the session hit a bug; note it. Otherwise skip the content (raw file dumps and command output are noise). |
 
 Extract the essential narrative:
 
 - The **session timestamp** and **working directory** from the `session` event.
 - Each **user message** in order.
 - Each **assistant `text` part** in order — this is the actual conversation.
-- Each **assistant `toolCall`** — which tools were invoked and roughly how many. This reveals what was implemented (e.g. "edited 3 files via `edit`, ran tests via `bash`").
+- Each **assistant `toolCall`** — which tools were invoked and roughly how many.
 - Each **assistant `thinking`** — skim for insights: bugs discovered, design decisions, alternatives considered, things the agent learned.
 - Any **`toolResult` with `isError: true`** — note as a potential bug or issue.
 
 Build a concise bullet list of:
 - What the user asked for (paraphrase each distinct request)
-- What was implemented or decided (from assistant text + tool calls + thinking traces)
+- What was implemented or decided (from assistant text + tool calls + thinking)
 - Any bugs or issues that were discovered but not fully resolved
 - Any follow-ups or open questions mentioned
 
-Keep the summary readable and high-level — you don't need every detail, just enough to derive work items.
+Keep the summary readable and high-level.
 
-### 3. Derive backlog items
+### 3. Derive work items
 
-From the summary, identify **distinct work items** that should be captured in the backlog. A work item is anything that:
+From the summary, identify **distinct work items** that should be captured as issues. A work item is anything that:
 
 - Was a **new feature or capability** built in the session
 - Was a **bug** discovered, even if fixed (it may need a follow-up in another context)
@@ -78,24 +78,52 @@ From the summary, identify **distinct work items** that should be captured in th
 
 For each work item, determine:
 
-- **type**: `feature`, `bug`, `tweak`, or `chore` (same taxonomy as `backlog-add`)
-- **title**: A short, descriptive slug-able name (e.g. "Add slug-based PRD naming")
+- **type**: `feature`, `bug`, `tweak`, or `chore`
+- **title**: A short, descriptive slug-able name
 - **summary**: 1–2 sentences capturing the work
 - **why**: The motivating problem or use case (can be inferred from the user's request)
+- **prd**: If the work relates to an existing PRD in the kanban repo, reference it by ID-slug
 - **open questions**: Any unresolved questions from the session
-- **notes**: Key context from the session — what files were changed, what decisions were made, links to relevant PRs or commits
+- **notes**: Key context from the session
 
-Do NOT write more than 6 items. If the session had more than 6 distinct work items, pick the 6 most impactful. Quality over quantity.
+Do NOT write more than 6 items. Pick the 6 most impactful.
 
-### 4. Write backlog entries (autonomous — no confirmation)
+### 4. Ensure kanban repo exists
 
-For every derived item, immediately write a backlog entry to `.planning/backlog/<slug>.md` using this template:
+```bash
+PROJECT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
+KANBAN_DIR="$(dirname "$PROJECT_DIR")/$(basename "$PROJECT_DIR")-kanban"
+```
+
+If `$KANBAN_DIR` does not exist, run `init-kanban-repo`:
+
+```bash
+~/projects/renan/agent-tools/scripts/init-kanban-repo
+```
+
+Ensure `reserve-issue-id` is available:
+
+```bash
+mkdir -p "$KANBAN_DIR/.tools"
+cp ~/projects/renan/agent-tools/scripts/reserve-issue-id "$KANBAN_DIR/.tools/reserve-issue-id" 2>/dev/null || true
+chmod +x "$KANBAN_DIR/.tools/reserve-issue-id" 2>/dev/null || true
+```
+
+### 5. Write issue files (autonomous — no confirmation)
+
+For every derived item:
+
+a. Reserve the next ID: `ID=$("$KANBAN_DIR/.tools/reserve-issue-id")`
+b. Derive the slug: 3–6 lowercase-hyphen words from the title
+c. Check if `"$KANBAN_DIR/issues/$ID-$slug.backlog.md"` already exists. If it does, **skip silently** — do not overwrite or prompt.
+d. Write the file:
 
 ```markdown
 ---
 type: feature | bug | tweak | chore
-status: backlog
+state: backlog
 created: <YYYY-MM-DD>
+prd: <optional: 000008-slug>
 ---
 
 # <Title>
@@ -118,31 +146,22 @@ created: <YYYY-MM-DD>
 - <Any other relevant context — files changed, decisions, links>
 ```
 
-Derive the `<slug>` the same way `backlog-add` does: 3–6 lowercase-hyphen words from the title.
+### 6. Report
 
-If `.planning/backlog/<slug>.md` already exists, **skip it silently** — do not overwrite or prompt. The existing entry may have been manually fleshed out or already promoted. Report it as skipped in the final summary.
-
-Create `.planning/backlog/` if it does not exist.
-
-### 5. Report
-
-Print a summary to stdout:
+Print a summary:
 
 ```
 [session-to-backlog] Derived from <session-filename>
-  ✓ <slug-1> — <title>
-  ✓ <slug-2> — <title>
-  ⊘ <slug-3> — already exists, skipped
+  ✓ <ID>-<slug> — <title>
+  ✓ <ID>-<slug> — <title>
+  ⊘ <slug> — already exists, skipped
   --> <N> items written, <M> skipped
 ```
 
-Use `✓` for written, `⊘` for skipped due to collision.
-
 ## Guardrails
 
-- **Never read a session that is not the last one for the current project.** The user can archive old sessions manually if they need to refer to something older.
-- **Never prompt the user.** This skill is fully autonomous.
-- **Never include raw tool output or file contents in the backlog entry.** Summaries only.
-- **Never modify or delete other backlog entries.** This skill only adds.
-- **Never overwrite an existing backlog entry.** If the slug collides, skip it.
-- **Never run `backlog-promote` or `to-prd`.** This skill feeds into those — they are separate steps.
+- Never read a session that is not the last one for the current project.
+- Never prompt the user. This skill is fully autonomous.
+- Never include raw tool output or file contents in the issue file. Summaries only.
+- Never modify or delete other issue files.
+- Never overwrite an existing issue file. If the full path already exists, skip it.

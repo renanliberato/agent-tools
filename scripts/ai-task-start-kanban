@@ -1,8 +1,24 @@
 #!/usr/bin/env zsh
-issues_dir="${1:?Usage: ai-task-start-kanban <issues-folder>}"
-issues_dir="$(cd "$issues_dir" && pwd)"
+# Start kanban tasks using cmux tabs, reading issues from the kanban repo.
+#
+# Usage:
+#   ai-task-start-kanban                               # uses <project>-kanban/issues/
+#   ai-task-start-kanban <issues-folder>               # explicit path
 
-project_name="$(basename "$PWD")"
+if [[ -n "$1" ]]; then
+  issues_dir="${1}"
+else
+  project_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+  project_dir="$(cd "$project_dir" && pwd)"
+  issues_dir="$(dirname "$project_dir")/$(basename "$project_dir")-kanban/issues"
+fi
+
+issues_dir="$(cd "$issues_dir" 2>/dev/null && pwd)" || {
+  echo "[kanban] error: issues directory not found: $issues_dir" >&2
+  exit 1
+}
+
+project_name="$(basename "$(dirname "$(dirname "$issues_dir")")")"
 project_dir="$PWD"
 status_dir="/tmp/kanban-${project_name}-$$"
 mkdir -p "$status_dir"

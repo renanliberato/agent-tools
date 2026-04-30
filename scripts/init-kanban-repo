@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# init-kanban-repo — Create or verify a kanban repo for a project.
+#
+# The kanban repo lives as a sibling directory: <project-dir>-kanban/
+# It contains:
+#   .counter             ← atomic counter for issues
+#   .counter.lock
+#   .prd-counter         ← atomic counter for PRDs
+#   .prd-counter.lock
+#   issues/              ← all issue files named <ID>-<slug>.<state>.md
+#   prds/                ← all PRD files named <ID>-<slug>.md (never deleted)
+#   archive/             ← done issues moved out of active view
+#
+# Usage:
+#   init-kanban-repo                  # infer project root from cwd
+#   init-kanban-repo --project-dir /path
+
+PROJECT_DIR=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --project-dir)
+      PROJECT_DIR="$2"
+      shift 2
+      ;;
+    *)
+      echo "unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [ -z "$PROJECT_DIR" ]; then
+  PROJECT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
+fi
+
+PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
+PARENT="$(dirname "$PROJECT_DIR")"
+BASENAME="$(basename "$PROJECT_DIR")"
+KANBAN_DIR="${PARENT}/${BASENAME}-kanban"
+
+if [ -d "$KANBAN_DIR" ]; then
+  # Already exists — ensure subdirs exist
+  mkdir -p "$KANBAN_DIR/issues" "$KANBAN_DIR/prds" "$KANBAN_DIR/archive"
+  if [ -f "$KANBAN_DIR/.gitignore" ]; then
+    :
+  else
+    cat > "$KANBAN_DIR/.gitignore" << 'GITIGNORE'
+*.lock
+GITIGNORE
+  fi
+  echo "$KANBAN_DIR"
+  exit 0
+fi
+
+# Create fresh
+mkdir -p "$KANBAN_DIR/issues" "$KANBAN_DIR/prds" "$KANBAN_DIR/archive"
+
+# .gitignore to exclude lock files
+cat > "$KANBAN_DIR/.gitignore" << 'GITIGNORE'
+*.lock
+GITIGNORE
+
+# Initialize counters
+echo 0 > "$KANBAN_DIR/.counter"
+echo 0 > "$KANBAN_DIR/.prd-counter"
+
+# Touch lock files so flock doesn't fail on first access
+touch "$KANBAN_DIR/.counter.lock"
+touch "$KANBAN_DIR/.prd-counter.lock"
+
+# Initialize git repo
+cd "$KANBAN_DIR"
+git init
+git add -A
+git commit -m "init: kanban repo for ${BASENAME}" --allow-empty 2>/dev/null || true
+
+echo "$KANBAN_DIR"

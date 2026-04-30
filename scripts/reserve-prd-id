@@ -1,0 +1,56 @@
+#!/bin/bash
+set -euo pipefail
+
+# reserve-prd-id — Atomically reserve the next sequential PRD ID.
+# PRDs use their own counter (separate from issues) so both sequences
+# start at 000001 and are independently readable.
+#
+# Usage:
+#   reserve-prd-id                            # infers project from cwd
+#   reserve-prd-id --project-dir /path
+#
+# Output: zero-padded 6-digit ID on stdout (e.g. 000012).
+# State: <project>-kanban/.prd-counter
+
+PROJECT_DIR=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --project-dir)
+      PROJECT_DIR="$2"
+      shift 2
+      ;;
+    *)
+      echo "unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [ -z "$PROJECT_DIR" ]; then
+  PROJECT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
+fi
+
+PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)"
+PARENT="$(dirname "$PROJECT_DIR")"
+BASENAME="$(basename "$PROJECT_DIR")"
+KANBAN_DIR="${PARENT}/${BASENAME}-kanban"
+
+if [ ! -d "$KANBAN_DIR" ]; then
+  echo "error: kanban repo not found at $KANBAN_DIR. Run init-kanban-repo first." >&2
+  exit 1
+fi
+
+COUNTER_FILE="$KANBAN_DIR/.prd-counter"
+LOCK_FILE="$KANBAN_DIR/.prd-counter.lock"
+
+(
+  flock -x 200
+  CURRENT=0
+  if [ -f "$COUNTER_FILE" ]; then
+    CURRENT=$(cat "$COUNTER_FILE")
+  fi
+  NEXT=$((CURRENT + 1))
+  printf "%06d\n" "$NEXT"
+  echo "$NEXT" > "$COUNTER_FILE"
+) 200>"$LOCK_FILE"

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Parse an issues directory into a deps.json for the kanban orchestrator."""
+"""Parse an issues directory into a deps.json for the kanban orchestrator.
+Reads all <ID>-<slug>.<state>.md files from given directory.
+
+State suffix: .backlog.md (not started), .active.md (in progress), .done.md (done).
+Orchestrator picks up .active.md and optionally .backlog.md for scheduling.
+"""
 import sys, os, re, json
 
 issues_dir = sys.argv[1]
@@ -8,11 +13,23 @@ tasks = {}
 for fname in sorted(os.listdir(issues_dir)):
     if not fname.endswith('.md'):
         continue
-    m = re.match(r'^([^/]+)\.md$', fname)
-    if not m:
+    # Match: <id>-<slug>.<state>.md or <id>-<slug>.md (legacy)
+    m = re.match(r'^([^/]+)\.(backlog|active|done)\.md$', fname)
+    legacy = re.match(r'^([^/]+)\.md$', fname)
+    if m:
+        task_id = m.group(1)        # e.g. "000042-add-login"
+        state = m.group(2)
+        slug = task_id
+    elif legacy:
+        task_id = legacy.group(1)
+        state = 'unknown'
+        slug = task_id
+    else:
         continue
-    task_id = fname[:-3]  # Full filename stem (e.g. "01-feature-a-setup-db")
-    slug = fname[:-3]     # Same value used for file matching
+
+    # Only schedule non-done items
+    if state == 'done':
+        continue
 
     content = open(os.path.join(issues_dir, fname)).read()
 
@@ -29,7 +46,11 @@ for fname in sorted(os.listdir(issues_dir)):
             bm = re.search(r'\[([^\]]+)\.md\]', line)
             if bm:
                 blockers.append(bm.group(1))
+            # Also match bare ID references like "000042" or "000042-add-login"
+            bare = re.search(r'\b(\d{6})(?:\b|-)', line)
+            if bare and bare.group(1) not in [b.split('.')[0] for b in blockers]:
+                blockers.append(bare.group(1))
 
-    tasks[task_id] = {'slug': slug, 'blockers': blockers}
+    tasks[task_id] = {'slug': slug, 'blockers': blockers, 'state': state}
 
 print(json.dumps({'tasks': tasks}, indent=2))

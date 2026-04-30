@@ -1,29 +1,80 @@
 ---
 name: to-prd
-description: Turn the current conversation context into a PRD and save it as .planning/prd-<slug>.md in the project root. Use when user wants to create a PRD from the current context.
+description: Turn the current conversation context into a PRD with its own sequential ID and save it as <project>-kanban/prds/<id>-<slug>.md. Preserves history — old PRDs are never overwritten, they coexist. Use when user wants to create a PRD from context.
 ---
 
-This skill takes the current conversation context and codebase understanding and produces a PRD. Do NOT interview the user — just synthesize what you already know.
+# To PRD
+
+Synthesize the current conversation into a product requirements document and save it as a **versioned, numbered PRD** in the project's kanban repo.
+
+Every PRD gets a unique sequential ID (`000001`, `000002`, …) independent from issue IDs. Old PRDs are never deleted or overwritten — they stay in `prds/` with `state: superseded` and a `superseded_by` pointer.
+
+## Prerequisites
+
+The kanban repo must exist. Run this from the project root:
+
+```bash
+# Ensure the kanban repo exists
+~/projects/renan/agent-tools/scripts/init-kanban-repo
+
+# Ensure reserve-prd-id is available
+KANBAN_DIR="$(dirname "$PWD")/$(basename "$PWD")-kanban"
+mkdir -p "$KANBAN_DIR/.tools"
+cp ~/projects/renan/agent-tools/scripts/reserve-prd-id "$KANBAN_DIR/.tools/reserve-prd-id"
+chmod +x "$KANBAN_DIR/.tools/reserve-prd-id"
+```
 
 ## Process
 
-1. Explore the repo to understand the current state of the codebase, if you haven't already.
+### 1. Explore the repo
 
-2. Sketch out the major modules you will need to build or modify to complete the implementation. Actively look for opportunities to extract deep modules that can be tested in isolation.
+Understand the current state of the codebase, if you haven't already.
 
-A deep module (as opposed to a shallow module) is one which encapsulates a lot of functionality in a simple, testable interface which rarely changes.
+### 2. Sketch modules
 
-Check with the user that these modules match their expectations. Check with the user which modules they want tests written for.
+Sketch out the major modules needed to complete the implementation. Look for opportunities to extract deep modules that can be tested in isolation.
 
-3. Write the PRD using the template below.
+Check with the user that these modules match their expectations. Check which modules they want tests written for.
 
-   **Determining the slug**: scan the final PRD text for the first `## ` heading (the title after "## Problem Statement" etc., or a separate `# Title` line if you include one). Slugify it: lowercase, replace non-alphanumeric runs with hyphens, trim leading/trailing hyphens. If no heading is found, use a short kebab-case description from memory (e.g. `multi-tenant-auth`).
+### 3. Determine supersession
 
-4. Save the PRD to `.planning/prd-<slug>.md` in the project root. Create the `.planning/` directory if it doesn't exist.
+Check whether `$KANBAN_DIR/prds/` already has a PRD covering the same domain. If so, ask the user:
 
-5. Write `<slug>` into `.planning/.latest-prd` (a single-line file). This enables the `to-issues` skill to automatically reference the right PRD.
+- **Supersede it**: the new PRD replaces the old one. The old PRD gets `state: superseded, superseded_by: <new-ID>`.
+- **Independent**: this is a completely separate effort.
 
-<prd-template>
+If none exists, skip.
+
+### 4. Reserve the next PRD ID
+
+```bash
+KANBAN_DIR="$(dirname "$PWD")/$(basename "$PWD")-kanban"
+ID=$("$KANBAN_DIR/.tools/reserve-prd-id")
+```
+
+`$ID` will be a zero-padded 6-digit string like `000008`.
+
+### 5. Determine the slug
+
+Derive from the topic: lowercase, replace non-alphanumeric runs with hyphens, trim edges (e.g. `piggy-bank-redesign`).
+
+### 6. Write the PRD
+
+Write `$KANBAN_DIR/prds/$ID-$slug.md` using this template:
+
+```markdown
+---
+type: prd
+state: draft | active | superseded
+id: <ID>
+slug: <slug>
+created: <YYYY-MM-DD>
+supersedes: <optional: 000001-previous-slug>
+superseded_by: <optional: filled later when superseded>
+issues: <optional: [000042, 000043] — filled when issues reference this PRD>
+---
+
+# PRD <ID>: <Title>
 
 ## Problem Statement
 
@@ -74,5 +125,34 @@ A description of the things that are out of scope for this PRD.
 ## Further Notes
 
 Any further notes about the feature.
+```
 
-</prd-template>
+Set `state` based on user intent: `draft` if still rough, `active` if ready to guide implementation.
+
+### 7. Update superseded PRD (if applicable)
+
+If the new PRD supersedes an old one, also edit the old PRD file to add:
+
+```yaml
+superseded_by: <ID>-<slug>
+```
+
+and change its `state` to `superseded`.
+
+### 8. Confirm
+
+Tell the user:
+
+- The full path of the new PRD file (`<kanban-dir>/prds/<ID>-<slug>.md`)
+- If an old PRD was superseded, which one
+- The total count of PRDs in `prds/`
+
+Do not commit to the kanban repo.
+
+## Guardrails
+
+- Never overwrite an existing PRD file. Always create a new one with a new ID.
+- Never write outside `<project>-kanban/prds/`.
+- Never prompt for the PRD ID — it is reserved atomically.
+- Do not create issue files. Issues are created separately via `backlog-add` or manually.
+- If the user asks to iterate on an existing PRD, create a new PRD that supersedes the old one. The old one stays in the repo for history.

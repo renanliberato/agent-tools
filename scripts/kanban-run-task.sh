@@ -45,27 +45,30 @@ if [[ "$answer" == "y" ]]; then
   KANBAN_BASE_BRANCH="${base_branch}" pi -p "@.claude/agents/kanban-commit.md"
   rmdir "${commit_lock}"
   touch "${status_dir}/${task_id}.done"
-  echo "[kanban] ✓ Marked as done."
 
-  # Archive the issue file (backlog-promote pattern)
+  # State transition: rename issue file to .done.md
   issues_dir="$(dirname "${abs_issue_path}")"
-  archive_dir="${issues_dir}/archive"
-  mkdir -p "${archive_dir}"
+  fname="$(basename "${abs_issue_path}")"
+  # Remove .backlog.md or .active.md suffix, add .done.md
+  done_fname="${fname%.backlog.md}"
+  done_fname="${done_fname%.active.md}"
+  if [[ -z "$done_fname" ]]; then
+    done_fname="${fname%.md}"
+  fi
+  done_fname="${done_fname}.done.md"
+
+  # Update the issue file with completion metadata before renaming
   {
     echo ""
     echo "---"
     echo "completed: $(date +%Y-%m-%d)"
-    echo "status: done"
+    echo "state: done"
     echo "---"
   } >> "${abs_issue_path}"
-  if command -v git >/dev/null && git -C "${issues_dir}" rev-parse --git-dir >/dev/null 2>&1; then
-    git -C "${issues_dir}" mv "$(basename "${abs_issue_path}")" "archive/" 2>/dev/null || mv "${abs_issue_path}" "${archive_dir}/"
-  else
-    mv "${abs_issue_path}" "${archive_dir}/"
-  fi
-  echo "[kanban] ✓ Archived issue → ${archive_dir}/"
-  echo "[kanban] ✓ Archive note: '$(basename "${abs_issue_path}")' moved to archive/"
-  # Flush so future orchestrator reruns won't re-process it
+
+  mv "${abs_issue_path}" "${issues_dir}/${done_fname}"
+  echo "[kanban] ✓ Issue transitioned: $(basename "${abs_issue_path}") → ${done_fname}"
+  echo "[kanban] ✓ Marked as done."
 else
   touch "${status_dir}/${task_id}.failed"
   echo "[kanban] ✗ Marked as failed. Downstream tasks blocked."

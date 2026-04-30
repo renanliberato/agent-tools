@@ -1,13 +1,15 @@
 ---
 name: backlog-add
-description: Capture a new feature, bug, or tweak idea into the project backlog at .planning/backlog/<id>-<slug>.md. Runs a short grilling pass against the existing domain model (CONTEXT.md, ADRs, code) so the entry is sharper than a one-liner. Uses sequential IDs (via flock(1)) so files sort naturally even with concurrent agents. Use when user wants to add to the backlog, capture an idea, log a bug or tweak for later, or build up a queue of work to later promote into a PRD.
+description: Capture a new feature, bug, or tweak idea as an issue file in the project's kanban repo at <project>-kanban/issues/<id>-<slug>.backlog.md. Runs a short grilling pass against the existing domain model so the entry is sharper than a one-liner. Uses sequential IDs (via flock(1)) so files sort naturally even with concurrent agents.
 ---
 
 # Backlog Add
 
-Capture an idea into `.planning/backlog/<NNNNNN>-<slug>.md` after grilling it briefly against the codebase. Each entry gets a sequential ID (atomically reserved via `flock`) so files sort naturally regardless of creation order or concurrency.
+Capture an idea into the project's **kanban repo** as `<project>-kanban/issues/<NNNNNN>-<slug>.<state>.md`.
 
-The output is a self-contained markdown file that can later be picked up by `backlog-promote` to feed into `to-prd` and `to-issues`.
+Every issue gets a single sequential ID at creation time — that ID never changes regardless of state transitions (backlog → active → done). The `.backlog.md` suffix denotes state; renaming the file changes its state.
+
+PRDs are separate: they live in `<project>-kanban/prds/` with their own independent counter.
 
 ## Prerequisites
 
@@ -22,10 +24,11 @@ which flock || sudo apt-get install -y util-linux   # Debian/Ubuntu
 which flock || sudo yum install -y util-linux        # RHEL/Fedora
 ```
 
-The companion tool `reserve-backlog-id` lives at:
-`/Users/renan.liberato/.agents/skills/backlog-add/reserve-backlog-id`
+The companion tools live under this skill's directory:
+- `reserve-backlog-id` — **deprecated**, kept for migration. Replaced by `reserve-issue-id` (see below).
+- `/Users/renan.liberato/projects/renan/agent-tools/scripts/reserve-issue-id` — the new atomic issue ID reservation script.
 
-The skill copies it into the project on first use.
+The skill copies `reserve-issue-id` into the kanban repo's `.tools/` on first use.
 
 ## Process
 
@@ -33,59 +36,74 @@ The skill copies it into the project on first use.
 
 The user will pass a one-liner or a short paragraph as the idea. If they passed nothing, ask for the seed in one sentence and stop until they reply.
 
-### 2. Ensure the tool is in the project
+### 2. Ensure kanban repo + tools exist
 
-On first use in this project, copy the companion tool into the project's `.planning/` directory:
+Resolve the kanban repo path from the current project root:
 
 ```bash
-mkdir -p .planning/.tools
-cp /Users/renan.liberato/.agents/skills/backlog-add/reserve-backlog-id .planning/.tools/reserve-backlog-id
-chmod +x .planning/.tools/reserve-backlog-id
+# From project root (git top-level or cwd)
+PROJECT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
+KANBAN_DIR="$(dirname "$PROJECT_DIR")/$(basename "$PROJECT_DIR")-kanban"
 ```
 
-If `.planning/.tools/reserve-backlog-id` already exists, skip this step.
+If `$KANBAN_DIR` does not exist, run `init-kanban-repo` to create it:
+
+```bash
+~/projects/renan/agent-tools/scripts/init-kanban-repo
+```
+
+Ensure `reserve-issue-id` is available in the kanban repo:
+
+```bash
+mkdir -p "$KANBAN_DIR/.tools"
+cp ~/projects/renan/agent-tools/scripts/reserve-issue-id "$KANBAN_DIR/.tools/reserve-issue-id"
+chmod +x "$KANBAN_DIR/.tools/reserve-issue-id"
+```
 
 ### 3. Pick a slug
 
-Slugify the idea into 3–6 lowercase-hyphen words (e.g. `customer-cancel-partial-order`). The full filename will be `<ID>-<slug>.md` where the ID is reserved atomically in step 5.
-
-If `.planning/backlog/` does not exist, create it.
+Slugify the idea into 3–6 lowercase-hyphen words (e.g. `customer-cancel-partial-order`). The full filename will be `<ID>-<slug>.backlog.md` where the ID is reserved atomically in step 5.
 
 ### 4. Grill — but keep it short
 
 Run a focused grilling pass following the spirit of the `grill-with-docs` skill, with these constraints to keep capture cheap:
 
-- **Cap at 5 questions.** This is a backlog entry, not a PRD. Stop early once the entry has enough shape to be promoted later.
+- **Cap at 5 questions.** This is a backlog entry, not a PRD. Stop early once the entry has enough shape.
 - Ask **one question at a time** and wait for the user's answer before continuing.
 - Skip questions you can answer yourself by reading `CONTEXT.md`, `CONTEXT-MAP.md`, `docs/adr/`, or the code — answer them silently and move on.
 - Challenge fuzzy or overloaded terms against the existing glossary in `CONTEXT.md`. If the user uses a term that conflicts with a defined one, call it out and resolve it.
-- Probe for the **one or two** decisions that would block writing a PRD later (the user the feature serves, the scope boundary, the success signal). Anything beyond that is premature for a backlog entry.
+- Probe for the **one or two** decisions that would block writing a PRD later (the user the feature serves, the scope boundary, the success signal). Anything beyond that is premature.
 
 If during grilling a domain term is resolved or an ADR-worthy decision crystallises, update `CONTEXT.md` / `docs/adr/` inline as `grill-with-docs` would. Do not batch.
 
 If the user says "skip the grilling" or "just save it", skip step 4 entirely and go to step 5 with whatever shape the seed has.
 
-### 5. Reserve the next sequential ID
-
-Reserve the next ID atomically (safe across concurrent agents):
+### 5. Reserve the next sequential issue ID
 
 ```bash
-ID=$(.planning/.tools/reserve-backlog-id)
+ID=$("$KANBAN_DIR/.tools/reserve-issue-id")
 ```
 
 `$ID` will be a zero-padded 6-digit string like `000042`.
 
-If the tool fails (e.g. `flock` not installed), abort with a clear error message telling the user to install `flock` (see Prerequisites above).
+If the tool fails, abort with a clear error message telling the user to install `flock` (see Prerequisites).
 
-### 6. Write the file
+### 6. Determine PRD reference (optional)
 
-Write `.planning/backlog/<ID>-<slug>.md` using this template:
+If the issue belongs to an existing PRD, determine the PRD ID. Read `$KANBAN_DIR/prds/` for existing PRDs and ask the user which one (or "none"). The PRD reference goes into the frontmatter as `prd: <ID>-<slug>`.
+
+If no matching PRD exists, omit the field — the issue is standalone. A PRD can be created later with `to-prd`.
+
+### 7. Write the file
+
+Write `"$KANBAN_DIR/issues/$ID-$slug.backlog.md"` using this template:
 
 ```markdown
 ---
 type: feature | bug | tweak | chore
-status: backlog
+state: backlog
 created: <YYYY-MM-DD>
+prd: <optional: 000008-slug>
 ---
 
 # <Title — short, descriptive>
@@ -97,6 +115,10 @@ One or two sentences capturing the idea in its sharpest form after grilling.
 ## Why
 
 The motivating problem, observed pain, or user signal. Skip if the seed truly had no "why" attached.
+
+## Acceptance criteria
+
+(Optional at backlog stage — filled in before moving to active.)
 
 ## Open questions
 
@@ -112,54 +134,20 @@ Anything that came out of grilling that doesn't fit above — adjacent decisions
 
 Pick `type` based on the seed: a new capability is `feature`, a defect is `bug`, a small adjustment to existing behaviour is `tweak`, anything purely internal is `chore`.
 
-### 7. Confirm
+### 8. Confirm
 
 Tell the user:
 
-- The file path that was written (including the ID prefix)
-- The current count of items in `.planning/backlog/` (excluding `archive/`)
+- The full file path that was written (including the kanban repo path and ID)
+- The current count of issues in `$KANBAN_DIR/issues/` across all states
 
-Do not commit. Do not run `to-prd` or `to-issues` — promotion is a separate step.
-
-## Migration: add IDs to existing backlog items
-
-If the project has existing backlog files without the ID prefix (e.g. `customer-cancel-partial-order.md`), you can migrate them automatically. Run this once to preserve the existing order and assign sequential IDs:
-
-```bash
-# From project root
-TOOL=.planning/.tools/reserve-backlog-id
-if [ ! -f "$TOOL" ]; then
-  mkdir -p .planning/.tools
-  cp /Users/renan.liberato/.agents/skills/backlog-add/reserve-backlog-id "$TOOL"
-  chmod +x "$TOOL"
-fi
-
-cd .planning/backlog
-for f in *.md; do
-  # Skip files that already have an ID prefix (NNNNNN-*)
-  if echo "$f" | grep -qE '^[0-9]{6}-'; then
-    echo "SKIP (already has ID): $f"
-    continue
-  fi
-  ID=$("$TOOL")
-  mv "$f" "${ID}-${f}"
-  echo "MIGRATED: $f → ${ID}-${f}"
-done
-```
-
-The migration preserves the creation date in the frontmatter — only the filename changes. After migration, the output list will look like:
-
-```
-MIGRATED: customer-cancel-partial-order.md → 000001-customer-cancel-partial-order.md
-MIGRATED: retry-on-429.md → 000002-retry-on-429.md
-```
-
-Run this only when the user asks for it, or mention it as an option if you detect existing unprefixed files in `.planning/backlog/`.
+Do not commit to the kanban repo. Do not run `to-prd` — PRD creation is a separate step.
 
 ## Guardrails
 
-- Never write outside `.planning/backlog/`.
-- Never modify or delete other backlog entries — this skill only adds.
+- Never write outside `<project>-kanban/issues/`.
+- Never modify or delete other issues — this skill only adds.
 - Never reuse an ID — the tool guarantees uniqueness via `flock`.
-- Do not invent acceptance criteria, user stories, or implementation plans. That detail belongs in the PRD/issues that come out of `backlog-promote`, and adding it now will rot before promotion.
+- Do not invent acceptance criteria unless the user explicitly provides them. That detail belongs in the active state.
+- Issues always get the `.backlog.md` suffix at creation time. State transitions (`.backlog.md` → `.active.md` → `.done.md`) are handled by other skills or manual `git mv`.
 - If the user invokes this skill repeatedly in one session, treat each invocation independently — fresh slug, fresh ID reservation, fresh grilling pass.
