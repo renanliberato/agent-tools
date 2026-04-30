@@ -42,6 +42,10 @@ if [[ "$answer" == "y" ]]; then
     sleep 5
   done
   echo "[kanban] Running commit agent..."
+  # Ensure .claude/agents/ exists in the worktree (not tracked in git)
+  mkdir -p "${PWD}/.claude/agents"
+  agent_src="$(dirname "$0")/../.claude/agents"
+  cp -r "${agent_src}/." "${PWD}/.claude/agents/"
   KANBAN_BASE_BRANCH="${base_branch}" pi -p "@.claude/agents/kanban-commit.md"
   rmdir "${commit_lock}"
   touch "${status_dir}/${task_id}.done"
