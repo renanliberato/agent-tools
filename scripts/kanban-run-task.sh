@@ -41,14 +41,8 @@ if [[ "$answer" == "y" ]]; then
     echo "[kanban] Waiting for commit lock (another task is committing)..."
     sleep 5
   done
-  echo "[kanban] Running commit agent..."
-  # Ensure .claude/agents/ exists in the worktree (not tracked in git)
-  mkdir -p "${PWD}/.claude/agents"
-  agent_src="$(dirname "$0")/../.claude/agents"
-  cp -r "${agent_src}/." "${PWD}/.claude/agents/"
-  KANBAN_BASE_BRANCH="${base_branch}" pi -p "EXECUTE the following agent instructions now. Do NOT describe or discuss them. Do NOT ask what to do. Just run every step in order. KANBAN_BASE_BRANCH=${base_branch}.
-
-@.claude/agents/kanban-commit.md"
+  echo "[kanban] Running commit skill..."
+  KANBAN_BASE_BRANCH="${base_branch}" pi -p "Run the kanban-commit skill now. KANBAN_BASE_BRANCH=${base_branch}."
   rmdir "${commit_lock}"
   touch "${status_dir}/${task_id}.done"
 
