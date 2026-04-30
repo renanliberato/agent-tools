@@ -10,6 +10,22 @@ import sys, os, re, json
 issues_dir = sys.argv[1]
 tasks = {}
 
+
+def parse_frontmatter(content):
+    """Parse YAML frontmatter between --- markers."""
+    result = {}
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != '---':
+        return result
+    end = 1
+    while end < len(lines) and lines[end].strip() != '---':
+        end += 1
+    for line in lines[1:end]:
+        m = re.match(r'^(\w+):\s*(.+)$', line)
+        if m:
+            result[m.group(1)] = m.group(2).strip()
+    return result
+
 for fname in sorted(os.listdir(issues_dir)):
     if not fname.endswith('.md'):
         continue
@@ -51,6 +67,16 @@ for fname in sorted(os.listdir(issues_dir)):
             if bare and not any(b.startswith(bare.group(1)) for b in blockers):
                 blockers.append(bare.group(1))
 
-    tasks[task_id] = {'slug': slug, 'blockers': blockers, 'state': state}
+    frontmatter = parse_frontmatter(content)
+    repo = frontmatter.get('repo', '')
+    branch = frontmatter.get('branch', '')
+
+    tasks[task_id] = {
+        'slug': slug,
+        'blockers': blockers,
+        'state': state,
+        'repo': repo,
+        'branch': branch,
+    }
 
 print(json.dumps({'tasks': tasks}, indent=2))

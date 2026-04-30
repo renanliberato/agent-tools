@@ -8,7 +8,7 @@ status_dir="$4"
 base_branch="${5:-main}"
 
 model="${KANBAN_MODEL:-sonnet}"
-prompt="Base branch is '${base_branch}'. Read the issue spec at @${abs_issue_path}, then implement it in the current worktree (${PWD}/). Do all file edits and the git commit from the current directory; do not switch to the parent worktree for git operations."
+prompt="This is the task worktree at ${PWD}/. The project code is here — edit files in-place, commit from this directory. Issue spec at @${abs_issue_path}. Target branch is '${base_branch}'. Do all file edits and the git commit from the current directory; do not switch to other repos or worktrees."
 
 if [[ "${KANBAN_HEADLESS:-0}" == "1" ]]; then
   "$model" -p "$prompt"

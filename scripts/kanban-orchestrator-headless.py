@@ -120,9 +120,23 @@ def is_unblocked(tid):
     return True
 
 
-def get_base_branch():
+def get_repo_for_tid(tid):
+    """Return the repo path for a task (from issue frontmatter `repo:`), falling back to project_dir."""
+    repo = tasks.get(tid, {}).get('repo', '')
+    if repo:
+        return os.path.expanduser(repo)
+    return project_dir
+
+
+def get_branch_for_tid(tid):
+    """Return the branch for a task (from issue frontmatter `branch:`),
+    or the repo's current HEAD branch."""
+    branch = tasks.get(tid, {}).get('branch', '')
+    if branch:
+        return branch
+    repo = get_repo_for_tid(tid)
     return subprocess.run(
-        ['git', '-C', project_dir, 'rev-parse', '--abbrev-ref', 'HEAD'],
+        ['git', '-C', repo, 'rev-parse', '--abbrev-ref', 'HEAD'],
         capture_output=True, text=True, check=True,
     ).stdout.strip()
 
@@ -131,10 +145,11 @@ def cleanup_worktree(tid):
     wt = task_state[tid]['worktree']
     if not wt:
         return
+    repo = get_repo_for_tid(tid)
     branch = os.path.basename(wt)
-    subprocess.run(['git', '-C', project_dir, 'worktree', 'remove', '--force', wt],
+    subprocess.run(['git', '-C', repo, 'worktree', 'remove', '--force', wt],
                    check=False, capture_output=True)
-    subprocess.run(['git', '-C', project_dir, 'branch', '-D', branch],
+    subprocess.run(['git', '-C', repo, 'branch', '-D', branch],
                    check=False, capture_output=True)
     task_state[tid]['worktree'] = None
 
@@ -156,13 +171,15 @@ def spawn_task(tid):
             st['last_line'] = 'no issue file found'
         return
 
+    repo_path = get_repo_for_tid(tid)
+    base_branch = get_branch_for_tid(tid)
+
     worktree = os.path.join(
         os.path.dirname(project_dir),
         f"{os.path.basename(project_dir)}-{slug}",
     )
 
-    base_branch = get_base_branch()
-    subprocess.run(['git', '-C', project_dir, 'worktree', 'add', worktree],
+    subprocess.run(['git', '-C', repo_path, 'worktree', 'add', worktree, base_branch],
                    check=True, capture_output=True)
 
     env = os.environ.copy()
