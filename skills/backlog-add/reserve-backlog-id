@@ -1,0 +1,57 @@
+#!/bin/bash
+set -euo pipefail
+
+# reserve-backlog-id — Atomically reserve the next sequential backlog ID.
+#
+# Uses flock(1) for POSIX-advisory file locking so multiple concurrent
+# agents never race on the same ID.
+#
+# Usage:
+#   reserve-backlog-id                   # uses git root or cwd
+#   reserve-backlog-id --project-dir /path
+#
+# Output: zero-padded 6-digit ID on stdout (e.g. 000001).
+#
+# State: <project>/.planning/backlog/.counter
+# Lock:  <project>/.planning/backlog/.counter.lock
+
+PROJECT_DIR=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --project-dir)
+      PROJECT_DIR="$2"
+      shift 2
+      ;;
+    *)
+      echo "unknown option: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [ -z "$PROJECT_DIR" ]; then
+  # Try git root, fall back to cwd
+  PROJECT_DIR=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+fi
+
+BACKLOG_DIR="$PROJECT_DIR/.planning/backlog"
+mkdir -p "$BACKLOG_DIR"
+
+COUNTER_FILE="$BACKLOG_DIR/.counter"
+LOCK_FILE="$BACKLOG_DIR/.counter.lock"
+
+(
+  # Acquire exclusive lock (blocks until available)
+  flock -x 200
+
+  # Read current counter, default to 0
+  CURRENT=0
+  if [ -f "$COUNTER_FILE" ]; then
+    CURRENT=$(cat "$COUNTER_FILE")
+  fi
+
+  NEXT=$((CURRENT + 1))
+  printf "%06d\n" "$NEXT"
+  echo "$NEXT" > "$COUNTER_FILE"
+) 200>"$LOCK_FILE"

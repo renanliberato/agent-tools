@@ -5,7 +5,7 @@ description: Promote one or more backlog entries from .planning/backlog/ into a 
 
 # Backlog Promote
 
-Pick one or more `.planning/backlog/<slug>.md` entries and turn them into:
+Pick one or more `.planning/backlog/<id>-<slug>.md` entries and turn them into:
 
 1. A PRD at `.planning/prd.md` (via the `to-prd` skill)
 2. Issue files under `.planning/issues/` (via the `to-issues` skill)
@@ -21,14 +21,17 @@ Read every `.md` file directly under `.planning/backlog/` (skip `archive/`). For
 
 Present the list to the user as a numbered table:
 
-| # | type | title | slug |
-|---|------|-------|------|
+| # | type | title | id-slug |
+|---|------|-------|---------|
 
 If `.planning/backlog/` is missing or empty, tell the user there is nothing to promote and stop.
 
 ### 2. Get the selection
 
-If the user already passed slugs or numbers as arguments, parse them directly. Otherwise, ask the user which item(s) to promote — accept either numbers (`1, 3`) or slugs (`customer-cancel-partial-order, retry-on-429`).
+If the user already passed slugs or numbers as arguments, parse them directly. Otherwise, ask the user which item(s) to promote — accept:
+  - **numbers** from the table (`1, 3`)
+  - **full id-slug** (`000042-customer-cancel-partial-order`)
+  - **slug only** (`customer-cancel-partial-order`) — resolves to the only matching entry, or errors if ambiguous.
 
 Confirm the final selection back to the user as a short bullet list and ask "promote these?" before proceeding. This is a destructive-ish operation (the entries leave the backlog) — confirm explicitly even if the user listed slugs in the original message.
 
@@ -60,7 +63,7 @@ If extending an existing issues set, tell `to-issues` to start numbering from th
 
 ### 6. Archive the promoted entries
 
-Once both `to-prd` and `to-issues` have completed successfully, move every selected backlog file from `.planning/backlog/<slug>.md` to `.planning/backlog/archive/<slug>.md`. Use `git mv` if the project is a git repo, otherwise plain `mv`. Create the `archive/` directory if it does not exist.
+Once both `to-prd` and `to-issues` have completed successfully, move every selected backlog file from `.planning/backlog/<id>-<slug>.md` to `.planning/backlog/archive/<id>-<slug>.md`. Use `git mv` if the project is a git repo, otherwise plain `mv`. Create the `archive/` directory if it does not exist.
 
 Before moving, append a small footer to each archived file so the trail is preserved:
 
