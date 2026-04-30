@@ -179,7 +179,7 @@ def spawn_task(tid):
         f"{os.path.basename(project_dir)}-{slug}",
     )
 
-    subprocess.run(['git', '-C', repo_path, 'worktree', 'add', worktree, base_branch],
+    subprocess.run(['git', '-C', repo_path, 'worktree', 'add', worktree],
                    check=True, capture_output=True)
 
     env = os.environ.copy()
