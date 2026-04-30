@@ -73,6 +73,7 @@ Run a focused grilling pass following the spirit of the `grill-with-docs` skill,
 - Skip questions you can answer yourself by reading `CONTEXT.md`, `CONTEXT-MAP.md`, `docs/adr/`, or the code — answer them silently and move on.
 - Challenge fuzzy or overloaded terms against the existing glossary in `CONTEXT.md`. If the user uses a term that conflicts with a defined one, call it out and resolve it.
 - Probe for the **one or two** decisions that would block writing a PRD later (the user the feature serves, the scope boundary, the success signal). Anything beyond that is premature.
+- Probe for **blockers** — if the idea depends on another issue being done first, note it for step 7. Ask: "Does this depend on another issue?" when coupling is plausible from context.
 
 If during grilling a domain term is resolved or an ADR-worthy decision crystallises, update `CONTEXT.md` / `docs/adr/` inline as `grill-with-docs` would. Do not batch.
 
@@ -94,7 +95,23 @@ If the issue belongs to an existing PRD, determine the PRD ID. Read `$KANBAN_DIR
 
 If no matching PRD exists, omit the field — the issue is standalone. A PRD can be created later with `to-prd`.
 
-### 7. Write the file
+### 7. Determine blockers (optional)
+
+Check whether this issue depends on another issue that must be completed first. Read the existing issues in `"$KANBAN_DIR/issues/"` for candidates.
+
+Probe during grilling (step 4) with a question like "Does this depend on another issue?" if the domain suggests coupling. If the user says yes, capture the dependency.
+
+When this issue has one or more blockers, add a `## Blocked by` section to the file (see template in step 8). Each blocker is a markdown link to the other issue file:
+
+```
+## Blocked by
+
+- [000042-other-issue-slug.backlog.md]
+```
+
+The `kanban-parse-deps.py` orchestrator reads this section to build the dependency graph. Both `[file.md]` links and bare `\d{6}` IDs are supported.
+
+### 8. Write the file
 
 Write `"$KANBAN_DIR/issues/$ID-$slug.backlog.md"` using this template:
 
@@ -116,6 +133,11 @@ One or two sentences capturing the idea in its sharpest form after grilling.
 
 The motivating problem, observed pain, or user signal. Skip if the seed truly had no "why" attached.
 
+## Blocked by
+
+(Optional — remove if no blockers. List files this issue depends on.)
+- [000042-other-issue-slug.backlog.md]
+
 ## Acceptance criteria
 
 (Optional at backlog stage — filled in before moving to active.)
@@ -134,12 +156,15 @@ Anything that came out of grilling that doesn't fit above — adjacent decisions
 
 Pick `type` based on the seed: a new capability is `feature`, a defect is `bug`, a small adjustment to existing behaviour is `tweak`, anything purely internal is `chore`.
 
-### 8. Confirm
+**Important:** Remove the `## Blocked by` section entirely (not just leave it empty) when the issue has no blockers — the parser reads its presence as a signal.
+
+### 9. Confirm
 
 Tell the user:
 
 - The full file path that was written (including the kanban repo path and ID)
 - The current count of issues in `$KANBAN_DIR/issues/` across all states
+- If the issue has blockers, list them
 
 Do not commit to the kanban repo. Do not run `to-prd` — PRD creation is a separate step.
 
@@ -151,3 +176,5 @@ Do not commit to the kanban repo. Do not run `to-prd` — PRD creation is a sepa
 - Do not invent acceptance criteria unless the user explicitly provides them. That detail belongs in the active state.
 - Issues always get the `.backlog.md` suffix at creation time. State transitions (`.backlog.md` → `.active.md` → `.done.md`) are handled by other skills or manual `git mv`.
 - If the user invokes this skill repeatedly in one session, treat each invocation independently — fresh slug, fresh ID reservation, fresh grilling pass.
+- **Always check for blockers** in step 7 before writing the file. If the issue has dependencies, they must be captured in `## Blocked by` for the orchestrator to schedule correctly.
+- **Remove `## Blocked by` entirely** (not just leave it empty) when there are no blockers. An empty section is treated as a signal by `kanban-parse-deps.py`.
