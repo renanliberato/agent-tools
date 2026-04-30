@@ -59,7 +59,7 @@ for fname in sorted(os.listdir(issues_dir)):
             if line.startswith('##'):
                 break
             # Match any [blah.md] markdown link — extracts the full stem as blocker id
-            bm = re.search(r'\[([^\]]+)\.md\]', line)
+            bm = re.search(r'\[([^\]]+?)\.(?:backlog|active|done)?\.md\]', line)
             if bm:
                 blockers.append(bm.group(1))
             # Also match bare ID references like "000042" or "000042-add-login"

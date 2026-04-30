@@ -103,7 +103,8 @@ def promote_to_active(tid):
 def has_failed_blocker(tid):
     for b in task_state[tid]['blockers']:
         if b not in task_state:
-            continue  # blocker not created yet — cannot be failed
+            # Blocker not in graph — it's either already done (has .done.md) or doesn't exist yet
+            continue
         if task_state[b]['status'] in ('FAILED', 'SKIPPED'):
             return True
         if has_failed_blocker(b):
@@ -113,10 +114,14 @@ def has_failed_blocker(tid):
 
 def is_unblocked(tid):
     for b in task_state[tid]['blockers']:
-        if b not in task_state:
-            return False  # blocker doesn't exist yet
-        if task_state[b]['status'] != 'DONE':
-            return False
+        if b in task_state:
+            if task_state[b]['status'] != 'DONE':
+                return False
+        else:
+            # Blocker not tracked — check if .done.md exists on disk
+            done_path = os.path.join(issues_dir, f"{b}.done.md")
+            if not os.path.exists(done_path):
+                return False
     return True
 
 
