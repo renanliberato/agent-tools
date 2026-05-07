@@ -1,0 +1,2 @@
+#!/bin/zsh
+exec pi --model deepseek-v4-pro "$@"
